@@ -18,6 +18,9 @@ var (
 	ErrUnreadable    = errors.New("unreadable") // the seal key is not the one the settings were sealed with
 )
 
+// NodeWrites is how many writes one node takes at the same time.
+const NodeWrites = 8
+
 // Entry is a store as the admin API lists it.
 type Entry struct {
 	Name    string
@@ -35,6 +38,19 @@ type Registry struct {
 
 	mu    sync.Mutex
 	cache map[string]cached
+	opens map[string]*sync.Mutex
+}
+
+func (r *Registry) openLock(name string) *sync.Mutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opens == nil {
+		r.opens = map[string]*sync.Mutex{}
+	}
+	if r.opens[name] == nil {
+		r.opens[name] = &sync.Mutex{}
+	}
+	return r.opens[name]
 }
 
 type cached struct {
@@ -177,6 +193,16 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 	if ok && c.updated == updated {
 		return c.m, nil
 	}
+	// one request opens the nodes and the others wait for it: twenty at once would make twenty connections to a server that takes a few handshakes at a time
+	lock := r.openLock(want)
+	lock.Lock()
+	defer lock.Unlock()
+	r.mu.Lock()
+	c, ok = r.cache[want]
+	r.mu.Unlock()
+	if ok && c.updated == updated {
+		return c.m, nil
+	}
 	plain, err := seal.Open(r.Key, want, rq.Str(rows[0][1]))
 	if err != nil {
 		return nil, ErrUnreadable
@@ -211,7 +237,7 @@ func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, e
 		if err != nil {
 			return nil, fmt.Errorf("node %s: %w", s.ID(), err)
 		}
-		m.Nodes = append(m.Nodes, &Node{ID: s.ID(), Spec: s, F: f})
+		m.Nodes = append(m.Nodes, &Node{ID: s.ID(), Spec: s, F: f, slots: make(chan struct{}, NodeWrites)})
 	}
 	return m, nil
 }

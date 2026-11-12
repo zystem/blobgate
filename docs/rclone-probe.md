@@ -31,3 +31,9 @@ Findings that change the design:
 
 **Not run:** S3 (Garage) through rclone; an FTP server without `SIZE` or `REST`; a node that goes away in the middle of a block (the server side); a case-insensitive node; names near the limits
 (255-byte segment, 260-byte path, characters a Windows server refuses); speed and memory; a server that gives a partial file only to the reader (a half-written file seen by a concurrent read).
+
+## Found by the tests with real servers (2026-11-12)
+
+* Two writers that make the same parent directory at the same moment fail on SFTP (`mkdir ... file exists`, SSH_FX_FAILURE). The module makes the directory of a block before it writes it, one at a time per node.
+* A client that opens many connections at once is refused by the server (`ssh: handshake failed: EOF` with 24 at once). The module opens the nodes of a store once for all requests that wait for them, and takes at most
+  `store.NodeWrites` (8) writes at a time on a node; the places on all nodes of a store are taken in the order of the nodes, so that two writers cannot wait for each other.

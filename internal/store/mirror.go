@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sync"
 	"time"
 
@@ -21,6 +22,20 @@ type Node struct {
 	ID   string
 	Spec NodeSpec
 	F    fs.Fs
+
+	slots chan struct{} // how many writes a node takes at once (a server limits the connections and the handshakes it takes from one client; 24 writers made an SFTP server refuse some)
+	mkMu  sync.Mutex    // directories are made one at a time on a node: two writers that make the same parent at the same moment make some servers answer "file exists" (SFTP) and fail
+}
+
+// makeDir makes the directory of a block before it is written, under the node's lock. A failure is not reported: the write says what really cannot be done.
+func (n *Node) makeDir(ctx context.Context, rel string) {
+	dir := path.Dir(rel)
+	if dir == "." || dir == "/" {
+		return
+	}
+	n.mkMu.Lock()
+	defer n.mkMu.Unlock()
+	_ = n.F.Mkdir(ctx, dir)
 }
 
 // Mirror writes to all its nodes, confirms by MinAcks, and reads from the first node that has a block that checks out.
@@ -62,6 +77,21 @@ type fanout struct {
 // is done. The error is non-nil when fewer than MinAcks nodes took the block (the bytes that did arrive are left for the caller to delete) or src failed.
 func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader) (WriteResult, error) {
 	n := len(m.Nodes)
+	// a place on every node, taken in the order of the nodes: two writers that wait for each other's nodes would never end if they took them in another order
+	taken := 0
+	defer func() {
+		for i := 0; i < taken; i++ {
+			<-m.Nodes[i].slots
+		}
+	}()
+	for _, node := range m.Nodes {
+		select {
+		case node.slots <- struct{}{}:
+			taken++
+		case <-ctx.Done():
+			return WriteResult{}, ctx.Err()
+		}
+	}
 	fo := &fanout{pipes: make([]*io.PipeWriter, n), alive: make([]bool, n), errs: make([]error, n)}
 	var wg sync.WaitGroup
 	readers := make([]*io.PipeReader, n)
@@ -71,6 +101,7 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 		wg.Add(1)
 		go func(i int, node *Node, pr *io.PipeReader) {
 			defer wg.Done()
+			node.makeDir(ctx, rel)
 			_, err := node.F.Put(ctx, pr, object.NewStaticObjectInfo(rel, time.Now(), size, true, nil, nil))
 			if err != nil {
 				fo.errs[i] = err
