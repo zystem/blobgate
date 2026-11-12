@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"gopkg.in/yaml.v3"
 
 	"github.com/zystem/blobgate/internal/auth"
 	"github.com/zystem/blobgate/internal/db"
@@ -34,12 +35,13 @@ const (
 )
 
 type rig struct {
-	t     *testing.T
-	s     *Server
-	ts    *httptest.Server
-	shim  *httptest.Server
-	nodes [2]string
-	dbc   *rq.Client
+	tolerate bool // a call may end with no answer (a simulated crash)
+	t        *testing.T
+	s        *Server
+	ts       *httptest.Server
+	shim     *httptest.Server
+	nodes    [2]string
+	dbc      *rq.Client
 }
 
 func newRig(t *testing.T, mut func(*Config)) *rig {
@@ -77,6 +79,9 @@ func (r *rig) do(method, path string, hdr map[string]string, body []byte) (int, 
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if r.tolerate { // the request was ended by a simulated crash of the process
+			return 0, nil, nil
+		}
 		r.t.Fatal(err)
 	}
 	defer resp.Body.Close()
@@ -119,8 +124,10 @@ func (r *rig) put(key string, body []byte) (int, []byte) {
 	return code, data
 }
 
-func (r *rig) get(key string, a, b int) (int, []byte) {
-	code, data, _ := r.core("GET", "/v1/stores/main/objects/"+key, "", map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", a, b)}, nil)
+func (r *rig) get(key string, a, b int) (int, []byte) { return r.getFrom("main", key, a, b) }
+
+func (r *rig) getFrom(store, key string, a, b int) (int, []byte) {
+	code, data, _ := r.core("GET", "/v1/stores/"+store+"/objects/"+key, "", map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", a, b)}, nil)
 	return code, data
 }
 
@@ -529,4 +536,58 @@ func (r *rig) dbCount(table string) int64 {
 		r.t.Fatal(err)
 	}
 	return rq.Int(rows[0][0])
+}
+
+// The description of the API (openapi.yaml, served at /v1/openapi.yaml) and the routes of the server are the same set: an operation in one and not in the other fails here.
+func TestOpenAPIMatchesRoutes(t *testing.T) {
+	var spec struct {
+		Paths map[string]map[string]any `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(openapiYAML, &spec); err != nil {
+		t.Fatal(err)
+	}
+	inSpec := map[string]bool{}
+	for p, ops := range spec.Paths {
+		for m := range ops {
+			if m == "parameters" {
+				continue
+			}
+			inSpec[strings.ToUpper(m)+" "+p] = true
+		}
+	}
+	// what the server does answer, as (method, template of the path): the concrete requests below are made from the templates
+	impl := []string{
+		"GET /healthz", "GET /readyz", "GET /v1/openapi.yaml", "GET /v1/stores",
+		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
+		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default",
+	}
+	for _, o := range impl {
+		if !inSpec[o] {
+			t.Errorf("the server has %s and the description has not", o)
+		}
+		delete(inSpec, o)
+	}
+	for o := range inSpec {
+		t.Errorf("the description has %s and the server has not", o)
+	}
+	// and every one of them is answered by a route (not "no such route", not "method not allowed")
+	r := newRig(t, nil)
+	r.mirror(0)
+	for _, o := range impl {
+		m, p, _ := strings.Cut(o, " ")
+		p = strings.NewReplacer("{store}", "main", "{key}", "k/x", "{name}", "main").Replace(p)
+		var code int
+		var data []byte
+		switch {
+		case strings.HasPrefix(p, "/v1/admin/"):
+			code, data = r.admin(m, p, map[string]any{"kind": "mirror", "nodes": []any{map[string]any{"remote": ":local:" + r.nodes[0]}}})
+		case strings.HasPrefix(p, "/v1/stores"):
+			code, data, _ = r.core(m, p, "", map[string]string{"Range": "bytes=0-1", "X-Content-SHA256": sha([]byte("x"))}, []byte("x"))
+		default:
+			code, data, _ = r.do(m, p, nil, nil)
+		}
+		if strings.Contains(string(data), `"not_found"`) || strings.Contains(string(data), `"method_not_allowed"`) {
+			t.Errorf("%s: %d %s", o, code, data)
+		}
+	}
 }

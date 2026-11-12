@@ -152,11 +152,11 @@ func (s *Server) writeBlock(ctx context.Context, m *store.Mirror, full, gen stri
 	rel := layout.BlockPath(full, gen, n)
 	res, err := m.Put(ctx, rel, size, body)
 	if err != nil {
-		_ = m.DeleteDir(context.WithoutCancel(ctx), layout.BlockDir(full, gen)) // what a node that did take it has kept
+		s.purge(ctx, m, full, gen) // what a node that did take it has kept; a node that cannot be cleaned now is queued
 		return "", putFailure(err)
 	}
 	if res.SHA256 != given {
-		_ = m.DeleteDir(context.WithoutCancel(ctx), layout.BlockDir(full, gen))
+		s.purge(ctx, m, full, gen)
 		return "", &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
 	}
 	s.queue(ctx, m.Name, layout.BlockKey(full, gen, n), "copy", res.Failed)
@@ -182,26 +182,57 @@ func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error
 	return o, nil
 }
 
-// commit makes the generation the object: one transaction, which is the whole of "fixing" an object. The blocks of the generation it replaces are removed afterwards.
+// purgeTasks are the statements that write down, for every node, that the generation the object has now must be removed from it: `INSERT ... SELECT` reads the row of the object in the same transaction
+// as the statement that changes it, so every generation that is replaced or deleted is written down, whoever else writes the key at the same moment, and a process that dies after the
+// transaction leaves the removal in the queue for the repair pass (write ahead: nothing is ever only in memory). `except` is the generation that stays ("" when the object goes).
+func (s *Server) purgeTasks(m *store.Mirror, full, except string) []rq.Stmt {
+	var out []rq.Stmt
+	for _, n := range m.Nodes {
+		out = append(out, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
+			"SELECT store, key || '~' || generation, ?, 'purge', ?, 0, 0, '' FROM storage_objects WHERE store = ? AND key = ? AND generation != '' AND generation != ? "+
+			"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, s.now(), m.Name, full, except))
+	}
+	return out
+}
+
+// commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
+// at once; what a node could not do stays in the queue.
 func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string) error {
 	old, err := s.getRow(ctx, m.Name, full)
 	if err != nil {
 		return err
 	}
 	bj, _ := json.Marshal(blocks)
-	now := s.now()
-	if _, err := s.DB.Exec(ctx, true,
+	s.at("commit:before")
+	stmts := s.purgeTasks(m, full, gen)
+	stmts = append(stmts,
 		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks) VALUES (?, ?, ?, ?, ?, ?, ?) "+
 			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks",
-			m.Name, full, size, now, gen, blockSize, string(bj)),
+			m.Name, full, size, s.now(), gen, blockSize, string(bj)),
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
-		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen)); err != nil {
+		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
+	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
 		return err
 	}
+	s.at("commit:after-tx")
 	if old != nil && old.generation != "" && old.generation != gen {
-		s.purge(ctx, m, full, old.generation)
+		s.purgeNow(ctx, m, full, old.generation)
 	}
 	return nil
+}
+
+// purgeNow removes a generation whose removal is already in the queue, and takes the task of every node that did it out of the queue.
+func (s *Server) purgeNow(ctx context.Context, m *store.Mirror, full, gen string) {
+	ctx = context.WithoutCancel(ctx)
+	failed := map[string]bool{}
+	for _, n := range m.DeleteDir(ctx, layout.BlockDir(full, gen)) {
+		failed[n.ID] = true
+	}
+	for _, n := range m.Nodes {
+		if !failed[n.ID] {
+			_, _ = s.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", m.Name, layout.DirKey(full, gen), n.ID))
+		}
+	}
 }
 
 // purge removes the blocks of a generation; the nodes that could not are put in the repair queue.
@@ -235,14 +266,16 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		fail(w, err)
 		return
 	}
+	s.at("put:after-uploads-row")
 	sha, e := s.writeBlock(ctx, m, full, gen, 0, size, given, r.Body)
 	if e != nil {
 		_, _ = s.DB.Exec(context.WithoutCancel(ctx), false, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 		e.write(w)
 		return
 	}
+	s.at("put:after-block")
 	if err := s.commit(ctx, m, full, gen, size, size, []string{sha}); err != nil {
-		_ = m.DeleteDir(context.WithoutCancel(ctx), layout.BlockDir(full, gen))
+		s.purge(ctx, m, full, gen)
 		fail(w, err)
 		return
 	}
@@ -331,6 +364,7 @@ func (s *Server) putPart(w http.ResponseWriter, r *http.Request, m *store.Mirror
 		return
 	}
 	s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", res.Failed)
+	s.at("part:after-block")
 	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at) VALUES (?, ?, ?, ?, ?, ?, ?) "+
 		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at",
 		m.Name, full, upload, n, res.SHA256, size, s.now())); err != nil {
@@ -453,6 +487,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		blocks[i] = p.sha
 		total += p.size
 	}
+	s.at("complete:before-commit")
 	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks); err != nil {
 		fail(w, err)
 		return
@@ -464,6 +499,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request, m *store.Mirror, 
 	ctx := r.Context()
 	if validUpload(upload) {
 		s.purge(ctx, m, full, upload)
+		s.at("abort:after-purge")
 		_, err := s.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload),
 			rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload))
 		if err != nil {
@@ -482,11 +518,15 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.M
 		return
 	}
 	if old != nil {
-		if _, err := s.DB.Exec(ctx, false, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ?", m.Name, full)); err != nil {
+		// the removal of the blocks is written down in the transaction that removes the row, so that a process that dies between the two leaves nothing that nobody knows of
+		stmts := s.purgeTasks(m, full, "")
+		stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ?", m.Name, full))
+		if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
 			fail(w, err)
 			return
 		}
-		s.purge(ctx, m, full, old.generation)
+		s.at("delete:after-tx")
+		s.purgeNow(ctx, m, full, old.generation)
 	}
 	writeJSON(w, 200, map[string]any{"deleted": true})
 }

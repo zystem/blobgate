@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: cinim-storage module API
+  title: blobgate (cinim-storage module) API
   version: "1"
   description: |
     The contract of the storage module (docs/storage-module.md), written down so that the Nim module and its Go replacement (blobgate) can be checked against one description.
@@ -85,7 +85,7 @@ components:
       type: object
       properties:
         name: {type: string}
-        kind: {type: string, description: "s3, dav (the Nim module); the Go module adds mirror"}
+        kind: {type: string, description: "mirror or s3"}
         default: {type: boolean}
     StoreAdmin:
       type: object
@@ -106,16 +106,18 @@ components:
       type: object
       description: the secret is sealed at rest and never returned
       properties:
-        kind: {type: string, default: s3}
+        kind: {type: string, enum: [s3, mirror], default: s3}
         endpoint: {type: string}
         region: {type: string, default: garage}
         bucket: {type: string}
         access_key_id: {type: string}
         secret_access_key: {type: string}
         space_url: {type: string}
-        nodes: {type: array, items: {type: string}}
-        token: {type: string}
-        min_acks: {type: integer}
+        nodes:
+          type: array
+          description: "mirror: every node is {remote: ':ftp,host=h:/path'} or {backend, options, path}, with `secrets` (options that are sealed: pass, secret_access_key) "
+          items: {type: object}
+        min_acks: {type: integer, description: "mirror: nodes that must confirm a write; 0 means all"}
         default: {type: boolean}
   responses:
     Problem:
@@ -288,15 +290,12 @@ paths:
       responses:
         "200": {description: "{name, default: true}"}
         "404": {description: no_such_store}
-  /v1/internal/node-auth:
+  /v1/openapi.yaml:
     get:
-      summary: 'the `forward_auth` call of a Caddy node (the Nim module only; the Go module does not have it)'
-      deprecated: true
+      summary: this description
       security: []
-      parameters: [{name: node, in: query, schema: {type: string}}]
       responses:
-        "200": {description: "body `ok`"}
-        "401": {description: "body `no`"}
+        "200": {description: this file}
 x-shim-port:
   description: |
     The second port (`CINIM_STORAGE_SHIM_PORT`, 18091, plain HTTP, its own pool, socket timeouts 30 s). Nothing else is open there.

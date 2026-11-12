@@ -40,6 +40,9 @@ type Config struct {
 	MaxReads     int           // reads of blocks at once (0: 8): each holds one block in memory
 	UploadTTL    time.Duration // an upload older than this is swept (0: 24 h)
 	Now          func() time.Time
+	// CrashAt, if set, is called at the named points of a write or a delete (`put:after-uploads-row`, `put:after-block`, `part:after-block`, `complete:before-commit`, `commit:before`,
+	// `commit:after-tx`, `delete:after-tx`, `abort:after-purge`). The tests make it end the request there, as a process that dies would; nothing sets it in the program.
+	CrashAt func(point string)
 }
 
 // Server answers the calls.
@@ -72,6 +75,12 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 }
 
 func (s *Server) now() int64 { return s.cfg.Now().Unix() }
+
+func (s *Server) at(point string) {
+	if s.cfg.CrashAt != nil {
+		s.cfg.CrashAt(point)
+	}
+}
 
 type apiError struct {
 	Error  string `json:"error"`
