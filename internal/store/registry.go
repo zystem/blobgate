@@ -123,7 +123,7 @@ func (r *Registry) Save(ctx context.Context, name string, cfg Config, sec Secret
 		return "", err
 	}
 	if _, err := r.DB.Exec(ctx, false, rq.S("INSERT INTO storage_stores (name, kind, config, secret, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?) "+
-		"ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, config = excluded.config, secret = excluded.secret, updated_at = excluded.updated_at",
+		"ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, config = excluded.config, secret = excluded.secret, updated_at = max(excluded.updated_at, storage_stores.updated_at + 1)", // it must change at every save: the opened nodes are kept by it
 		name, cfg.Kind, string(cj), sealed, now, now)); err != nil {
 		return "", err
 	}
@@ -234,6 +234,17 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, error) {
 	specs := cfg.Specs(sec)
 	m := &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL}
+	if cfg.Encrypt != nil || len(sec.EncKeys) > 0 {
+		var cur uint32
+		if cfg.Encrypt != nil {
+			cur = cfg.Encrypt.KeyID
+		}
+		c, err := NewCipher(cur, sec.EncKeys)
+		if err != nil {
+			return nil, err
+		}
+		m.Enc = c
+	}
 	if m.MinAcks <= 0 || m.MinAcks > len(specs) {
 		m.MinAcks = len(specs)
 	}

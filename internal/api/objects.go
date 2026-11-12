@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -147,35 +150,92 @@ func putFailure(err error) *herr {
 	return &herr{503, "unavailable", err.Error()}
 }
 
-// writeBlock writes block n of a generation to the nodes and checks the digest of what arrived; on a bad digest the block is taken back.
-func (s *Server) writeBlock(ctx context.Context, m *store.Mirror, full, gen string, n int, size int64, given string, body io.Reader) (string, *herr) {
+// written says what a block is as it lies on the nodes.
+type written struct {
+	plain      string // SHA-256 of what the writer sent (what the shim reported, and the etag of a part)
+	stored     string // SHA-256 of the block as stored: the same as plain, or of the sealed bytes
+	storedSize int64
+	enc        uint32 // the id of the key the block is sealed with; 0: not sealed
+	failed     []*store.Node
+}
+
+// putBlock reads a block from the body, checks its digest against the one the writer named, and writes it to the nodes (sealed, when the store seals). A block that does not match is not kept: with a
+// store that seals nothing is written at all, because the body is read before; without, what the nodes took is deleted by name.
+func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string, n int, size int64, given string, body io.Reader) (written, *herr) {
 	rel := layout.BlockPath(full, gen, n)
+	if m.Sealing() {
+		// a block is sealed whole (the tag is at its end): it is held in memory, one block per write going on, and the number of them is bounded
+		select {
+		case s.seals <- struct{}{}:
+			defer func() { <-s.seals }()
+		case <-ctx.Done():
+			return written{}, &herr{503, "unavailable", ctx.Err().Error()}
+		}
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(body, buf); err != nil {
+			return written{}, &herr{503, "unavailable", "the body did not come whole: " + err.Error()}
+		}
+		sum := sha256.Sum256(buf)
+		if hex.EncodeToString(sum[:]) != given {
+			return written{}, &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
+		}
+		sealed, err := m.Enc.Seal(full, gen, n, buf)
+		if err != nil {
+			return written{}, &herr{500, "encryption_failed", err.Error()}
+		}
+		res, err := m.Put(ctx, rel, int64(len(sealed)), bytes.NewReader(sealed))
+		if err != nil {
+			deleteBlock(context.WithoutCancel(ctx), m, rel)
+			return written{}, putFailure(err)
+		}
+		return written{plain: given, stored: res.SHA256, storedSize: int64(len(sealed)), enc: m.Enc.Current, failed: res.Failed}, nil
+	}
 	res, err := m.Put(ctx, rel, size, body)
 	if err != nil {
-		s.purge(ctx, m, full, gen) // what a node that did take it has kept; a node that cannot be cleaned now is queued
-		return "", putFailure(err)
+		deleteBlock(context.WithoutCancel(ctx), m, rel) // what a node that did take it has kept
+		return written{}, putFailure(err)
 	}
 	if res.SHA256 != given {
-		s.purge(ctx, m, full, gen)
-		return "", &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
+		deleteBlock(context.WithoutCancel(ctx), m, rel)
+		return written{}, &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
 	}
-	s.queue(ctx, m.Name, layout.BlockKey(full, gen, n), "copy", res.Failed)
-	return res.SHA256, nil
+	return written{plain: res.SHA256, stored: res.SHA256, storedSize: size, failed: res.Failed}, nil
+}
+
+// writeBlock writes the one block of an object in a single call; on a failure the whole directory of the generation is removed (what cannot be removed now is queued).
+func (s *Server) writeBlock(ctx context.Context, m *store.Mirror, full, gen string, n int, size int64, given string, body io.Reader) (written, *herr) {
+	w, e := s.putBlock(ctx, m, full, gen, n, size, given, body)
+	if e != nil {
+		s.purge(ctx, m, full, gen)
+		return written{}, e
+	}
+	s.queue(ctx, m.Name, layout.BlockKey(full, gen, n), "copy", w.failed)
+	return w, nil
+}
+
+// storedLen is the length of block i of an object as it lies on the nodes.
+func (o *objectRow) storedLen(i int) int64 {
+	n := min(o.blockSize, o.size-int64(i)*o.blockSize)
+	if o.enc != 0 {
+		n += store.EncOverhead
+	}
+	return n
 }
 
 type objectRow struct {
 	size       int64
 	generation string
 	blockSize  int64
-	blocks     []string
+	blocks     []string // SHA-256 of the blocks as stored
+	enc        uint32
 }
 
 func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error) {
-	rows, err := s.DB.Query(ctx, rq.S("SELECT size, generation, block_size, blocks FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	rows, err := s.DB.Query(ctx, rq.S("SELECT size, generation, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2])}
+	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: uint32(rq.Int(rows[0][4]))}
 	if err := json.Unmarshal([]byte(rq.Str(rows[0][3])), &o.blocks); err != nil {
 		return nil, fmt.Errorf("the row of %s is damaged: %w", full, err)
 	}
@@ -197,7 +257,7 @@ func (s *Server) purgeTasks(m *store.Mirror, full, except string) []rq.Stmt {
 
 // commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
 // at once; what a node could not do stays in the queue.
-func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string) error {
+func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string, enc uint32) error {
 	old, err := s.getRow(ctx, m.Name, full)
 	if err != nil {
 		return err
@@ -206,9 +266,9 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 	s.at("commit:before")
 	stmts := s.purgeTasks(m, full, gen)
 	stmts = append(stmts,
-		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks) VALUES (?, ?, ?, ?, ?, ?, ?) "+
-			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks",
-			m.Name, full, size, s.now(), gen, blockSize, string(bj)),
+		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks, enc = excluded.enc",
+			m.Name, full, size, s.now(), gen, blockSize, string(bj), enc),
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
@@ -267,14 +327,14 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		return
 	}
 	s.at("put:after-uploads-row")
-	sha, e := s.writeBlock(ctx, m, full, gen, 0, size, given, r.Body)
+	w0, e := s.writeBlock(ctx, m, full, gen, 0, size, given, r.Body)
 	if e != nil {
 		_, _ = s.DB.Exec(context.WithoutCancel(ctx), false, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 		e.write(w)
 		return
 	}
 	s.at("put:after-block")
-	if err := s.commit(ctx, m, full, gen, size, size, []string{sha}); err != nil {
+	if err := s.commit(ctx, m, full, gen, size, size, []string{w0.stored}, w0.enc); err != nil {
 		s.purge(ctx, m, full, gen)
 		fail(w, err)
 		return
@@ -350,28 +410,20 @@ func (s *Server) putPart(w http.ResponseWriter, r *http.Request, m *store.Mirror
 		problem(w, 404, "no_such_upload", "no such upload (it was completed, aborted or swept)")
 		return
 	}
-	rel := layout.BlockPath(full, upload, n-1)
-	res, perr := m.Put(ctx, rel, size, r.Body)
-	if perr != nil {
-		deleteBlock(context.WithoutCancel(ctx), m, rel) // what a node that did take it has kept; one that cannot be cleaned now is overwritten by the retry, or swept with the upload
-		putFailure(perr).write(w)
+	wr, herr := s.putBlock(ctx, m, full, upload, n-1, size, given, r.Body)
+	if herr != nil {
+		herr.write(w)
 		return
 	}
-	if res.SHA256 != given {
-		// the block that was just written is deleted by name, not its directory: other parts of the upload are in it
-		deleteBlock(context.WithoutCancel(ctx), m, rel)
-		problem(w, 400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names")
-		return
-	}
-	s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", res.Failed)
+	s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", wr.failed)
 	s.at("part:after-block")
-	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at) VALUES (?, ?, ?, ?, ?, ?, ?) "+
-		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at",
-		m.Name, full, upload, n, res.SHA256, size, s.now())); err != nil {
+	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at, stored_sha256, stored_size, enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at, stored_sha256 = excluded.stored_sha256, stored_size = excluded.stored_size, enc = excluded.enc",
+		m.Name, full, upload, n, wr.plain, size, s.now(), wr.stored, wr.storedSize, wr.enc)); err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"etag": etag(res.SHA256, size)})
+	writeJSON(w, 200, map[string]any{"etag": etag(wr.plain, size)})
 }
 
 func etag(sha string, size int64) string { return sha + "-" + strconv.FormatInt(size, 10) }
@@ -389,19 +441,26 @@ func deleteBlock(ctx context.Context, m *store.Mirror, rel string) []*store.Node
 }
 
 type partRow struct {
-	part int
-	sha  string
-	size int64
+	part       int
+	sha        string // of what the writer sent
+	size       int64
+	stored     string // of the block as stored
+	storedSize int64
+	enc        uint32
 }
 
 func (s *Server) partsOf(ctx context.Context, st, full, upload string) ([]partRow, error) {
-	rows, err := s.DB.Query(ctx, rq.S("SELECT part, sha256, size FROM storage_parts WHERE store = ? AND key = ? AND upload = ? ORDER BY part", st, full, upload))
+	rows, err := s.DB.Query(ctx, rq.S("SELECT part, sha256, size, stored_sha256, stored_size, enc FROM storage_parts WHERE store = ? AND key = ? AND upload = ? ORDER BY part", st, full, upload))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]partRow, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, partRow{int(rq.Int(r[0])), rq.Str(r[1]), rq.Int(r[2])})
+		p := partRow{int(rq.Int(r[0])), rq.Str(r[1]), rq.Int(r[2]), rq.Str(r[3]), rq.Int(r[4]), uint32(rq.Int(r[5]))}
+		if p.stored == "" { // a row written before the blocks could be sealed
+			p.stored, p.storedSize = p.sha, p.size
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }
@@ -462,6 +521,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 	}
 	sort.Slice(given, func(i, j int) bool { return given[i].n < given[j].n })
 	blocks := make([]string, len(given))
+	var enc uint32
 	var total, blockSize int64
 	for i, g := range given {
 		if g.n != i+1 {
@@ -484,11 +544,17 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 			problem(w, 400, "invalid_request", "every part but the last is as long as the first, and the last is not longer")
 			return
 		}
-		blocks[i] = p.sha
+		if i == 0 {
+			enc = p.enc
+		} else if p.enc != enc {
+			problem(w, 400, "invalid_request", "the parts of the upload are not all sealed the same way (the settings of the store changed in the middle of it): upload it again")
+			return
+		}
+		blocks[i] = p.stored
 		total += p.size
 	}
 	s.at("complete:before-commit")
-	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks); err != nil {
+	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, enc); err != nil {
 		fail(w, err)
 		return
 	}
@@ -602,8 +668,14 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 			return nil, r.Context().Err()
 		}
 		defer func() { <-s.reads }()
-		bl := min(o.blockSize, o.size-int64(i)*o.blockSize)
-		return m.ReadBlock(r.Context(), layout.BlockPath(full, o.generation, i), o.blocks[i], bl)
+		data, err := m.ReadBlock(r.Context(), layout.BlockPath(full, o.generation, i), o.blocks[i], o.storedLen(i))
+		if err != nil || o.enc == 0 {
+			return data, err
+		}
+		if m.Enc == nil {
+			return nil, &store.ErrNoKey{ID: o.enc}
+		}
+		return m.Enc.Open(full, o.generation, i, data)
 	}
 	slice := func(i int, data []byte) []byte {
 		start := int64(i) * o.blockSize

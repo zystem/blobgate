@@ -48,6 +48,8 @@ type Mirror struct {
 	Name    string
 	Nodes   []*Node
 	MinAcks int // already resolved: 1..len(Nodes)
+	// Enc, if set, seals the blocks of this store (Enc.Current != 0) and opens the sealed ones that it has the key for
+	Enc *Cipher
 	// SpaceURL, if set, is where an S3 store says how much room it has (Garage's /metrics)
 	SpaceURL string
 
@@ -332,6 +334,9 @@ func (m *Mirror) Check(ctx context.Context) string {
 	}
 	return ""
 }
+
+// Sealing says whether new blocks of this store are sealed.
+func (m *Mirror) Sealing() bool { return m.Enc != nil && m.Enc.Current != 0 }
 
 // NodeByID finds a node of the store.
 func (m *Mirror) NodeByID(id string) *Node {

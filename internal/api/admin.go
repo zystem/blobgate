@@ -32,6 +32,11 @@ type storeBody struct {
 	Nodes    []nodeBody `json:"nodes"`
 	MinAcks  int        `json:"min_acks"`
 	Default  bool       `json:"default"`
+	// Encryption seals the blocks written from now on; keys keeps every key an object was ever sealed with (id -> text), key_id is the one new blocks use
+	Encryption *struct {
+		KeyID uint32            `json:"key_id"`
+		Keys  map[string]string `json:"keys"`
+	} `json:"encryption"`
 }
 
 func (b storeBody) parse() (store.Config, store.Secrets, error) {
@@ -39,6 +44,12 @@ func (b storeBody) parse() (store.Config, store.Secrets, error) {
 	var sec store.Secrets
 	if cfg.Kind == "" {
 		cfg.Kind = "s3"
+	}
+	if b.Encryption != nil {
+		if b.Encryption.KeyID != 0 {
+			cfg.Encrypt = &store.EncConfig{KeyID: b.Encryption.KeyID}
+		}
+		sec.EncKeys = b.Encryption.Keys
 	}
 	if cfg.Kind == "s3" {
 		cfg.Endpoint, cfg.Region, cfg.Bucket, cfg.KeyID = b.Endpoint, b.Region, b.Bucket, b.KeyID
@@ -101,7 +112,11 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			if rows, err := s.DB.Query(ctx, rq.S("SELECT count(*) FROM storage_repair WHERE store = ?", e.Name)); err == nil && len(rows) == 1 {
 				pend = rq.Int(rows[0][0])
 			}
-			items = append(items, map[string]any{"name": e.Name, "kind": e.Cfg.Kind, "default": e.Default, "endpoint": e.Cfg.Endpoint, "region": e.Cfg.Region,
+			var enc any
+			if e.Cfg.Encrypt != nil {
+				enc = map[string]any{"key_id": e.Cfg.Encrypt.KeyID}
+			}
+			items = append(items, map[string]any{"encryption": enc, "name": e.Name, "kind": e.Cfg.Kind, "default": e.Default, "endpoint": e.Cfg.Endpoint, "region": e.Cfg.Region,
 				"bucket": e.Cfg.Bucket, "access_key_id": e.Cfg.KeyID, "nodes": nodes, "min_acks": acks, "objects": n, "space_url": e.Cfg.SpaceURL, "repair_pending": pend})
 		}
 		writeJSON(w, 200, map[string]any{"stores": items})

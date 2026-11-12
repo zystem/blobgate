@@ -319,3 +319,63 @@ func TestNoBackup(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// The newest backup is damaged: the restore says so, names the older ones, and leaves the database alone; with an id the older one is restored; with the fallback the newest that checks out is.
+func TestDamagedNewestBackup(t *testing.T) {
+	r := newRig(t)
+	fill(t, r.url, 1)
+	post(t, r.url, "/db/execute", []any{[]any{"INSERT INTO small VALUES (?, ?)", "marker", "first"}})
+	first, err := Backup(context.Background(), r.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post(t, r.url, "/db/execute", []any{[]any{"INSERT INTO small VALUES (?, ?)", "marker", "second"}})
+	time.Sleep(1100 * time.Millisecond) // the ids are made of the second
+	second, err := Backup(context.Background(), r.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the newest is damaged on both nodes
+	for _, n := range r.nodes {
+		p := filepath.Join(n, "_backup", Set, second.ID, "0")
+		data, _ := os.ReadFile(p)
+		data[len(data)/2] ^= 0xff
+		_ = os.WriteFile(p, data, 0o644)
+	}
+	all, err := VerifyAll(context.Background(), r.cfg)
+	if err != nil || len(all) != 2 || all[0].Err == nil || all[1].Err != nil || all[0].Manifest.ID != second.ID {
+		t.Fatalf("verify all: %v %v", all, err)
+	}
+	wipe(t, r.url)
+	_, err = Restore(context.Background(), r.cfg, "", false)
+	if err == nil || !strings.Contains(err.Error(), first.ID) || !strings.Contains(err.Error(), "-fallback") || !strings.Contains(err.Error(), "-id") {
+		t.Fatalf("the error does not say how to choose the older one: %v", err)
+	}
+	if empty, _ := IsEmpty(context.Background(), r.url); !empty {
+		t.Fatal("a failed restore changed the database")
+	}
+	// by id
+	if m, err := Restore(context.Background(), r.cfg, first.ID, false); err != nil || m.ID != first.ID {
+		t.Fatalf("by id: %v", err)
+	}
+	if v := post(t, r.url, "/db/query?level=strong", []any{"SELECT v FROM small WHERE k='marker'"}); !strings.Contains(string(v), "first") || strings.Contains(string(v), "second") {
+		t.Fatalf("the older state was not restored: %s", v)
+	}
+	// by fallback
+	wipe(t, r.url)
+	m, err := RestoreWith(context.Background(), r.cfg, Options{Fallback: true})
+	if err != nil || m.ID != first.ID {
+		t.Fatalf("fallback: %v %v", m.ID, err)
+	}
+	// a fallback that finds nothing readable says so
+	wipe(t, r.url)
+	for _, n := range r.nodes {
+		p := filepath.Join(n, "_backup", Set, first.ID, "0")
+		data, _ := os.ReadFile(p)
+		data[len(data)/2] ^= 0xff
+		_ = os.WriteFile(p, data, 0o644)
+	}
+	if _, err := RestoreWith(context.Background(), r.cfg, Options{Fallback: true}); err == nil || !strings.Contains(err.Error(), "untouched") {
+		t.Fatalf("%v", err)
+	}
+}

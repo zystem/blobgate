@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/rclone/rclone/fs"
@@ -33,6 +34,7 @@ type Config struct {
 	Nodes    []NodeSpec `json:"nodes,omitempty"`
 	MinAcks  int        `json:"min_acks,omitempty"` // 0: every node must confirm a write
 	SpaceURL string     `json:"space_url,omitempty"`
+	Encrypt  *EncConfig `json:"encrypt,omitempty"`  // seal the blocks written from now on (what is already written stays as it is and is still read)
 	Endpoint string     `json:"endpoint,omitempty"` // s3
 	Region   string     `json:"region,omitempty"`
 	Bucket   string     `json:"bucket,omitempty"`
@@ -43,6 +45,7 @@ type Config struct {
 type Secrets struct {
 	Nodes    []map[string]string `json:"nodes,omitempty"`
 	S3Secret string              `json:"s3_secret,omitempty"`
+	EncKeys  map[string]string   `json:"enc_keys,omitempty"` // key id -> the text the key is made of; every key an object was sealed with must stay, or the object cannot be read
 }
 
 // ValidName says whether this may be the name of a store: lowercase letters, digits and -, starting with a letter, at most 32.
@@ -91,6 +94,19 @@ func ParseRemote(remote string) (NodeSpec, error) {
 func (c Config) Check(s Secrets) string {
 	if c.Layout > CurrentLayout {
 		return fmt.Sprintf("layout %d is newer than this program knows (%d)", c.Layout, CurrentLayout)
+	}
+	if c.Encrypt != nil || len(s.EncKeys) > 0 {
+		if c.Encrypt != nil && (c.Encrypt.KeyID == 0 || s.EncKeys[strconv.FormatUint(uint64(c.Encrypt.KeyID), 10)] == "") {
+			return "encryption.key_id is the id of a key in encryption.keys (ids are numbers from 1)"
+		}
+		for id, k := range s.EncKeys {
+			if n, err := strconv.ParseUint(id, 10, 32); err != nil || n == 0 {
+				return fmt.Sprintf("a key id is a number from 1: %q", id)
+			}
+			if !printable(k, 16, 256) {
+				return "a key is 16..256 printable characters"
+			}
+		}
 	}
 	switch c.Kind {
 	case "s3":

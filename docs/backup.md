@@ -15,6 +15,7 @@ the database: the nodes and the key are in the environment, and a backup is read
 | `CINIM_STORAGE_BACKUP_KEEP` | `7` | Backups kept; older ones are removed after each new one. |
 | `CINIM_STORAGE_BACKUP_MIN_ACKS` | `0` (every node) | Nodes that must take every block. |
 | `CINIM_STORAGE_BACKUP_SECONDS` | `0` (the module does not back up by itself) | Back up every so many seconds; one replica at a time (the lease `backup`). Dangerous when too short: every backup reads the whole database. |
+| `CINIM_STORAGE_RESTORE_FALLBACK` | `0` | `1`: with `CINIM_STORAGE_RESTORE_ON_EMPTY`, when the newest backup does not check out take the newest that does (the state is then older). |
 | `CINIM_STORAGE_RESTORE_ON_EMPTY` | `0` | `1`: at start, a database with no table at all is filled from the newest backup before the module makes its own tables. |
 
 ## Take a backup
@@ -50,6 +51,20 @@ restore: the database is not empty: a restore replaces all of it; run it with fo
 
 With `CINIM_STORAGE_RESTORE_ON_EMPTY=1` the module does this itself at start (and starts empty, with a line in the log, when there is no backup at all; it stops when there is one that cannot be read, rather
 than make new tables over what it would have restored).
+
+## The newest backup is damaged
+
+`blobgate restore` reads and checks the whole backup before it touches the database, so a damaged one changes nothing, and the error names the older ones:
+
+```
+restore: the backup does not check out, the database is untouched: 20261112T215317Z-cad17e: block 0: ...; older backups: 20261111T215317Z-91ab03 (restore one with -id, or take the newest that checks out with -fallback; `blobgate verify -all` says which can be read)
+```
+
+* `blobgate verify -all` reads every backup and says which can be read (`ok` or `BAD` with the reason).
+* `blobgate restore -id 20261111T215317Z-91ab03` takes the one you choose.
+* `blobgate restore -fallback` takes the newest that checks out. The database is then **older** than the newest backup says, by as much as the backups that were skipped; look at the line it prints.
+* `CINIM_STORAGE_RESTORE_FALLBACK=1` does the same for `CINIM_STORAGE_RESTORE_ON_EMPTY=1` at start. Default `0`: a module that cannot read the newest backup stops, because starting from an older state
+  is a decision for a person, not for a restart loop.
 
 ## What was run (2026-11-12) and what was not
 

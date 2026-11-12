@@ -15,6 +15,8 @@ The cleanup of a replaced or deleted generation is written down in the transacti
 
 Also built: `blobgate validate` (what a node can do, before it is put in a store), the version of the layout in the settings of a store (a program refuses a newer one), `:reconcile` (a check of the nodes against the database from outside, dry by default), backup and restore of rqlite (docs/backup.md).
 
+Also built: sealing of the blocks of a store on the fly (docs/encryption.md); a restore that names the older backups when the newest is damaged, `verify -all`, `restore -id`, `-fallback`.
+
 Not built yet: Prometheus metrics; the Nim process tests against this binary (they start Caddy nodes, which this module does not use); tests with servers other than SFTPGo and Garage (the error words of a full disk are matched by text and are known only from the documentation of the protocols); speed and memory;
 a Dockerfile and the pipeline; the end of the pass on SIGTERM waits for the pass in progress (a long pass delays the stop).
 

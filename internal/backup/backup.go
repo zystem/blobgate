@@ -374,18 +374,7 @@ func Verify(ctx context.Context, c Config, id string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	r, err := c.reader(ctx, m, man)
-	if err != nil {
-		return man, err
-	}
-	n, err := io.Copy(io.Discard, r)
-	if err != nil {
-		return man, err
-	}
-	if n != man.RawSize {
-		return man, fmt.Errorf("the backup holds %d bytes, the manifest says %d", n, man.RawSize)
-	}
-	return man, nil
+	return verifyManifest(ctx, c, m, man)
 }
 
 // reader gives the SQLite file of a backup, block by block, as the blocks are read.
@@ -445,9 +434,60 @@ func IsEmpty(ctx context.Context, url string) (bool, error) {
 	return out.Results[0].Values[0][0] == 0, nil
 }
 
+// Result is what VerifyAll says of one backup.
+type Result struct {
+	Manifest Manifest
+	Err      error // nil: it checks out
+}
+
+// VerifyAll checks every backup on the nodes, newest first, and says which of them can be read. It is what to run to know which one to restore when the newest is damaged.
+func VerifyAll(ctx context.Context, c Config) ([]Result, error) {
+	m, err := c.mirror(ctx)
+	if err != nil {
+		return nil, err
+	}
+	mans, err := list(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Result, 0, len(mans))
+	for _, man := range mans {
+		_, verr := verifyManifest(ctx, c, m, man)
+		out = append(out, Result{Manifest: man, Err: verr})
+	}
+	return out, nil
+}
+
+func verifyManifest(ctx context.Context, c Config, m *store.Mirror, man Manifest) (Manifest, error) {
+	r, err := c.reader(ctx, m, man)
+	if err != nil {
+		return man, err
+	}
+	n, err := io.Copy(io.Discard, r)
+	if err != nil {
+		return man, err
+	}
+	if n != man.RawSize {
+		return man, fmt.Errorf("the backup holds %d bytes, the manifest says %d", n, man.RawSize)
+	}
+	return man, nil
+}
+
+// Options says how a restore is done.
+type Options struct {
+	ID       string // "" or "latest": the newest
+	Force    bool   // into a database that is not empty
+	Fallback bool   // when the backup chosen does not check out, take the newest older one that does (without an ID only). The state of the database is then older than the newest backup says: say so.
+}
+
 // Restore puts a backup ("" or "latest": the newest) into the database. It refuses a database that is not empty unless force. The backup is read and checked whole before the database is
-// touched, so that a backup that cannot be read changes nothing.
+// touched, so that a backup that cannot be read changes nothing. When the newest does not check out the error names the older ones, so that one can be chosen with an ID (or with Fallback).
 func Restore(ctx context.Context, c Config, id string, force bool) (Manifest, error) {
+	return RestoreWith(ctx, c, Options{ID: id, Force: force})
+}
+
+// RestoreWith is Restore with the options of a restore.
+func RestoreWith(ctx context.Context, c Config, o Options) (Manifest, error) {
 	m, err := c.mirror(ctx)
 	if err != nil {
 		return Manifest{}, err
@@ -456,11 +496,11 @@ func Restore(ctx context.Context, c Config, id string, force bool) (Manifest, er
 	if err != nil {
 		return Manifest{}, err
 	}
-	man, err := pick(mans, id)
+	man, err := pick(mans, o.ID)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if !force {
+	if !o.Force {
 		empty, err := IsEmpty(ctx, c.RqliteURL)
 		if err != nil {
 			return man, fmt.Errorf("rqlite: %w", err)
@@ -469,9 +509,33 @@ func Restore(ctx context.Context, c Config, id string, force bool) (Manifest, er
 			return man, errors.New("the database is not empty: a restore replaces all of it; run it with force when that is meant")
 		}
 	}
-	if _, err := Verify(ctx, c, man.ID); err != nil {
-		return man, fmt.Errorf("the backup %s does not check out, the database is untouched: %w", man.ID, err)
+	candidates := []Manifest{man}
+	if o.Fallback && (o.ID == "" || o.ID == "latest") {
+		candidates = mans
 	}
+	var failed []string
+	for _, cand := range candidates {
+		if _, err := verifyManifest(ctx, c, m, cand); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", cand.ID, err))
+			continue
+		}
+		return c.load(ctx, m, cand)
+	}
+	older := ""
+	for _, x := range mans {
+		if x.ID != man.ID {
+			older += " " + x.ID
+		}
+	}
+	hint := ""
+	if !o.Fallback && older != "" {
+		hint = fmt.Sprintf("; older backups:%s (restore one with -id, or take the newest that checks out with -fallback; `blobgate verify -all` says which can be read)", older)
+	}
+	return man, fmt.Errorf("the backup does not check out, the database is untouched: %s%s", strings.Join(failed, "; "), hint)
+}
+
+// load puts a backup that has been checked into the database.
+func (c Config) load(ctx context.Context, m *store.Mirror, man Manifest) (Manifest, error) {
 	r, err := c.reader(ctx, m, man)
 	if err != nil {
 		return man, err

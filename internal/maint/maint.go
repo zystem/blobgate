@@ -231,7 +231,7 @@ func (w *Worker) do(ctx context.Context, t task) error {
 
 // expected is the digest and the size block n of the generation must have: from the object's row if the generation is the current one, else from the parts of the upload it belongs to.
 func (w *Worker) expected(ctx context.Context, st, full, gen string, n int) (sha string, size int64, found bool, err error) {
-	rows, err := w.DB.Query(ctx, rq.S("SELECT generation, size, block_size, blocks FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	rows, err := w.DB.Query(ctx, rq.S("SELECT generation, size, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -239,13 +239,20 @@ func (w *Worker) expected(ctx context.Context, st, full, gen string, n int) (sha
 		var blocks []string
 		if json.Unmarshal([]byte(rq.Str(rows[0][3])), &blocks) == nil && n < len(blocks) {
 			total, bs := rq.Int(rows[0][1]), rq.Int(rows[0][2])
-			return blocks[n], min(bs, total-int64(n)*bs), true, nil
+			size = min(bs, total-int64(n)*bs)
+			if rq.Int(rows[0][4]) != 0 {
+				size += store.EncOverhead // a sealed block is longer than what it holds
+			}
+			return blocks[n], size, true, nil
 		}
 		return "", 0, false, nil
 	}
-	rows, err = w.DB.Query(ctx, rq.S("SELECT sha256, size FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND part = ?", st, full, gen, n+1))
+	rows, err = w.DB.Query(ctx, rq.S("SELECT sha256, size, stored_sha256, stored_size FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND part = ?", st, full, gen, n+1))
 	if err != nil || len(rows) == 0 {
 		return "", 0, false, err
+	}
+	if rq.Str(rows[0][2]) != "" { // sealed: what lies on the nodes is the stored block
+		return rq.Str(rows[0][2]), rq.Int(rows[0][3]), true, nil
 	}
 	return rq.Str(rows[0][0]), rq.Int(rows[0][1]), true, nil
 }
@@ -306,7 +313,7 @@ func (w *Worker) CheckPass(ctx context.Context) int {
 		if err != nil || len(m.Nodes) < 2 {
 			continue
 		}
-		rows, err := w.DB.Query(ctx, rq.S("SELECT key, size, generation, block_size, blocks FROM storage_objects WHERE store = ? AND key > ? ORDER BY key LIMIT ?", e.Name, w.cursor[e.Name], w.cfg.CheckSlice))
+		rows, err := w.DB.Query(ctx, rq.S("SELECT key, size, generation, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key > ? ORDER BY key LIMIT ?", e.Name, w.cursor[e.Name], w.cfg.CheckSlice))
 		if err != nil {
 			continue
 		}
@@ -323,6 +330,9 @@ func (w *Worker) CheckPass(ctx context.Context) int {
 			}
 			for i, sha := range blocks {
 				size := min(bs, total-int64(i)*bs)
+				if rq.Int(r[5]) != 0 {
+					size += store.EncOverhead
+				}
 				rel := layout.BlockPath(full, gen, i)
 				for _, n := range m.Nodes {
 					if n.Verify(ctx, rel, size, sha, w.cfg.Deep) == nil {

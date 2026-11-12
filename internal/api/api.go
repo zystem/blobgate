@@ -51,6 +51,7 @@ type Server struct {
 	DB    *rq.Client
 	Reg   *store.Registry
 	reads chan struct{}
+	seals chan struct{} // blocks being sealed: each holds one in memory
 	log   *slog.Logger
 }
 
@@ -71,7 +72,7 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), log: log}
+	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), seals: make(chan struct{}, cfg.MaxReads), log: log}
 }
 
 func (s *Server) now() int64 { return s.cfg.Now().Unix() }
@@ -103,6 +104,7 @@ func problem(w http.ResponseWriter, code int, kind, detail string) {
 // fail answers for an error of the database or of the nodes.
 func fail(w http.ResponseWriter, err error) {
 	var un *store.ErrUnavailable
+	var nokey *store.ErrNoKey
 	switch {
 	case rq.IsDB(err):
 		problem(w, 503, "database_unavailable", err.Error())
@@ -114,6 +116,10 @@ func fail(w http.ResponseWriter, err error) {
 		problem(w, 409, "not_configured", "the module has no store yet")
 	case errors.Is(err, store.ErrNoSuchStore):
 		problem(w, 404, "no_such_store", "no such store")
+	case errors.As(err, &nokey):
+		problem(w, 500, "encrypted_no_key", nokey.Error())
+	case errors.Is(err, store.ErrDecrypt):
+		problem(w, 500, "decrypt_failed", err.Error())
 	case errors.Is(err, store.ErrNewerLayout):
 		problem(w, 500, "newer_layout", "the store was written by a newer version of this program: update it (docs/compat.md)")
 	case errors.Is(err, store.ErrUnreadable):

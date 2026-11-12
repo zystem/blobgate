@@ -178,7 +178,7 @@ func restoreIfEmpty(ctx context.Context, url string, log *slog.Logger) {
 	if !empty {
 		return
 	}
-	m, err := backup.Restore(ctx, cfg, "", false)
+	m, err := backup.RestoreWith(ctx, cfg, backup.Options{Fallback: os.Getenv("CINIM_STORAGE_RESTORE_FALLBACK") == "1"})
 	switch {
 	case err == nil:
 		log.Info("the database was empty and was restored", "backup", m.ID, "created", m.Created, "bytes", m.RawSize)

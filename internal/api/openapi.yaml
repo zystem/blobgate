@@ -75,7 +75,8 @@ components:
           type: string
           description: |
             unauthorized, no_such_object, no_such_store, not_configured, invalid_key, invalid_request, invalid_part, invalid_range, range_required, sha256_required, sha256_mismatch,
-            empty_body, too_large, store_full, storage_unreachable, store_in_use, unavailable, database_unavailable, method_not_allowed, not_found, unreadable
+            empty_body, too_large, store_full, storage_unreachable, store_in_use, unavailable, database_unavailable, method_not_allowed, not_found, unreadable, newer_layout,
+            no_such_upload, encrypted_no_key, decrypt_failed, encryption_failed, store_error
         detail: {type: string}
     Size:
       type: object
@@ -118,6 +119,14 @@ components:
           description: "mirror: every node is {remote: ':ftp,host=h:/path'} or {backend, options, path}, with `secrets` (options that are sealed: pass, secret_access_key) "
           items: {type: object}
         min_acks: {type: integer, description: "mirror: nodes that must confirm a write; 0 means all"}
+        encryption:
+          type: object
+          description: |
+            Seal the blocks written from now on with AES-256-GCM (docs/encryption.md). `keys` is every key an object was ever sealed with (id from 1 -> text of 16..256 printable characters);
+            `key_id` is the one new blocks use. What is already written stays as it is and is still read; a key that is dropped makes what it sealed unreadable (500 encrypted_no_key).
+          properties:
+            key_id: {type: integer, minimum: 1}
+            keys: {type: object, additionalProperties: {type: string}}
         default: {type: boolean}
   responses:
     Problem:
