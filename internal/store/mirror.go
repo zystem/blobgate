@@ -24,6 +24,7 @@ type Node struct {
 	F    fs.Fs
 
 	slots chan struct{} // how many writes a node takes at once (a server limits the connections and the handshakes it takes from one client; 24 writers made an SFTP server refuse some)
+	made  sync.Map      // directories that this process has made on the node
 	mkMu  sync.Mutex    // directories are made one at a time on a node: two writers that make the same parent at the same moment make some servers answer "file exists" (SFTP) and fail
 }
 
@@ -32,15 +33,25 @@ func NewNode(spec NodeSpec, f fs.Fs) *Node {
 	return &Node{ID: spec.ID(), Spec: spec, F: f, slots: make(chan struct{}, NodeWrites)}
 }
 
-// makeDir makes the directory of a block before it is written, under the node's lock. A failure is not reported: the write says what really cannot be done.
+// makeDir makes the directory that holds the directory of the blocks (`<escaped key path>` of `<path>~<generation>/<n>`), under the node's lock, and remembers that it is there: the directory
+// of the generation is new for every write, and rclone makes it with the file, but a directory that many writers share is made by one at a time. A failure is not reported: the write says what
+// really cannot be done.
 func (n *Node) makeDir(ctx context.Context, rel string) {
-	dir := path.Dir(rel)
+	dir := path.Dir(path.Dir(rel))
 	if dir == "." || dir == "/" {
+		return
+	}
+	if _, ok := n.made.Load(dir); ok {
 		return
 	}
 	n.mkMu.Lock()
 	defer n.mkMu.Unlock()
-	_ = n.F.Mkdir(ctx, dir)
+	if _, ok := n.made.Load(dir); ok {
+		return
+	}
+	if err := n.F.Mkdir(ctx, dir); err == nil {
+		n.made.Store(dir, true)
+	}
 }
 
 // Mirror writes to all its nodes, confirms by MinAcks, and reads from the first node that has a block that checks out.
@@ -223,12 +234,17 @@ func readWhole(ctx context.Context, n *Node, rel string, size int64) ([]byte, er
 		return nil, err
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(io.LimitReader(rc, size+1))
-	if err != nil {
+	// the buffer is made of the size the block must have: reading with a growing buffer holds up to twice the block while it grows
+	data := make([]byte, size)
+	if _, err := io.ReadFull(rc, data); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return nil, fmt.Errorf("the block is shorter than the %d bytes it must have", size)
+		}
 		return nil, err
 	}
-	if int64(len(data)) != size {
-		return nil, fmt.Errorf("the block is %d bytes, not %d", len(data), size)
+	var extra [1]byte
+	if k, _ := rc.Read(extra[:]); k > 0 {
+		return nil, fmt.Errorf("the block is longer than the %d bytes it must have", size)
 	}
 	return data, nil
 }

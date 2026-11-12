@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/seal"
@@ -40,6 +41,34 @@ type Registry struct {
 	mu    sync.Mutex
 	cache map[string]cached
 	opens map[string]*sync.Mutex
+	rows  map[string]rowCache // the settings of a store as last read, for RowTTL
+	def   defCache
+}
+
+// RowTTL is how long the settings of a store (and the name of the default one) are kept before they are read again. A change made through this replica shows at once; one made through another
+// replica shows within this time. A request costs no query of the database for them in between.
+const RowTTL = 2 * time.Second
+
+type rowCache struct {
+	config, secret string
+	updated        int64
+	at             time.Time
+}
+
+type defCache struct {
+	name string
+	at   time.Time
+	ok   bool
+}
+
+// Refresh drops what is kept of the settings, so that the next request reads them (the tests, which change the database behind the registry's back).
+func (r *Registry) Refresh() { r.forget() }
+
+func (r *Registry) forget() {
+	r.mu.Lock()
+	r.rows = nil
+	r.def = defCache{}
+	r.mu.Unlock()
 }
 
 func (r *Registry) openLock(name string) *sync.Mutex {
@@ -95,6 +124,7 @@ func (r *Registry) SetDefault(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	_, err = r.DB.Exec(ctx, false, rq.S("UPDATE storage_stores SET is_default = CASE WHEN name = ? THEN 1 ELSE 0 END", name))
+	r.forget()
 	return err == nil, err
 }
 
@@ -127,6 +157,7 @@ func (r *Registry) Save(ctx context.Context, name string, cfg Config, sec Secret
 		name, cfg.Kind, string(cj), sealed, now, now)); err != nil {
 		return "", err
 	}
+	r.forget()
 	// "no default" rather than "no store" is the test, so that a registration cut off between the row and the mark is put right by the next one
 	if d, err := r.DefaultName(ctx); makeDefault || (err == nil && d == "") {
 		_, err = r.SetDefault(ctx, name)
@@ -165,6 +196,7 @@ func (r *Registry) Forget(ctx context.Context, name string, force bool) (string,
 	r.mu.Lock()
 	delete(r.cache, name)
 	r.mu.Unlock()
+	r.forget()
 	return "", err
 }
 
@@ -172,7 +204,7 @@ func (r *Registry) Forget(ctx context.Context, name string, force bool) (string,
 func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 	want := name
 	if want == "" {
-		d, err := r.DefaultName(ctx)
+		d, err := r.defaultCached(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -181,13 +213,14 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 		}
 		want = d
 	}
-	rows, err := r.DB.Query(ctx, rq.S("SELECT config, secret, updated_at FROM storage_stores WHERE name = ?", want))
+	row, err := r.rowCached(ctx, want)
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 {
+	if row == nil {
 		return nil, ErrNoSuchStore
 	}
+	rows := [][]any{{row.config, row.secret, float64(row.updated)}}
 	updated := rq.Int(rows[0][2])
 	r.mu.Lock()
 	c, ok := r.cache[want]
@@ -256,4 +289,53 @@ func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, e
 		m.Nodes = append(m.Nodes, NewNode(s, f))
 	}
 	return m, nil
+}
+
+func (r *Registry) defaultCached(ctx context.Context) (string, error) {
+	r.mu.Lock()
+	d := r.def
+	r.mu.Unlock()
+	if d.ok && time.Since(d.at) < RowTTL {
+		return d.name, nil
+	}
+	rows, err := r.DB.QueryWeak(ctx, rq.S("SELECT name FROM storage_stores WHERE is_default = 1"))
+	if err != nil {
+		return "", err
+	}
+	name := ""
+	if len(rows) > 0 {
+		name = rq.Str(rows[0][0])
+	}
+	r.mu.Lock()
+	r.def = defCache{name: name, at: time.Now(), ok: true}
+	r.mu.Unlock()
+	return name, nil
+}
+
+// rowCached is the settings of a store, or nil when there is none.
+func (r *Registry) rowCached(ctx context.Context, name string) (*rowCache, error) {
+	r.mu.Lock()
+	c, ok := r.rows[name]
+	r.mu.Unlock()
+	if ok && time.Since(c.at) < RowTTL {
+		return &c, nil
+	}
+	rows, err := r.DB.QueryWeak(ctx, rq.S("SELECT config, secret, updated_at FROM storage_stores WHERE name = ?", name))
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		r.mu.Lock()
+		delete(r.rows, name)
+		r.mu.Unlock()
+		return nil, nil
+	}
+	c = rowCache{config: rq.Str(rows[0][0]), secret: rq.Str(rows[0][1]), updated: rq.Int(rows[0][2]), at: time.Now()}
+	r.mu.Lock()
+	if r.rows == nil {
+		r.rows = map[string]rowCache{}
+	}
+	r.rows[name] = c
+	r.mu.Unlock()
+	return &c, nil
 }

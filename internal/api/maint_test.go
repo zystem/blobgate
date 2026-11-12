@@ -336,6 +336,7 @@ func TestNewerLayoutIsRefused(t *testing.T) {
 	if _, err := r.dbc.Exec(context.Background(), false, rq.S(`UPDATE storage_stores SET config = json_set(config, '$.layout', 99), updated_at = updated_at + 1`)); err != nil {
 		t.Fatal(err)
 	}
+	r.s.Reg.Refresh()
 	code, data := r.put("k/b", []byte("b"))
 	if code != 500 || !strings.Contains(string(data), "newer_layout") {
 		t.Fatalf("%d %s", code, data)

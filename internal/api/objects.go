@@ -231,7 +231,7 @@ type objectRow struct {
 }
 
 func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error) {
-	rows, err := s.DB.Query(ctx, rq.S("SELECT size, generation, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}

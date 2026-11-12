@@ -114,9 +114,15 @@ func (c *Client) Exec(ctx context.Context, tx bool, stmts ...Stmt) ([]int64, err
 	return n, nil
 }
 
-// Query runs one SELECT at the strong level (read through the leader, so that what was written is read).
-func (c *Client) Query(ctx context.Context, s Stmt) (Rows, error) {
-	res, err := c.post(ctx, "/db/query?level=strong", []Stmt{s})
+// Query runs one SELECT at the strong level (a consensus read, so that what was written is read whoever wrote it).
+func (c *Client) Query(ctx context.Context, s Stmt) (Rows, error) { return c.query(ctx, "strong", s) }
+
+// QueryWeak runs one SELECT at the weak level: the leader answers from its own state, with no round of consensus (about as fast as a local read, and what was written through the leader is read). For the
+// reads on the hot path of a request; a decision that needs to be linearizable (the lease) uses Query.
+func (c *Client) QueryWeak(ctx context.Context, s Stmt) (Rows, error) { return c.query(ctx, "weak", s) }
+
+func (c *Client) query(ctx context.Context, level string, s Stmt) (Rows, error) {
+	res, err := c.post(ctx, "/db/query?level="+level, []Stmt{s})
 	if err != nil {
 		return nil, err
 	}

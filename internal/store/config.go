@@ -182,6 +182,13 @@ func (c Config) Specs(s Secrets) []NodeSpec {
 	return out
 }
 
+// backendDefaults are options the module sets for a backend when the store does not: where rclone's own default makes the module slow. The WebDAV backend sleeps 10 ms between any two calls to one
+// node, which held every operation on a node to about a hundred calls a second (a write of 64 KiB takes several): measured 23 writes and 46 reads of 64 KiB a second on a node that gave
+// a thousand. A store that names the option itself keeps its value (a server that throttles).
+var backendDefaults = map[string]map[string]string{
+	"webdav": {"pacer_min_sleep": "100us"},
+}
+
 func quote(v string) string { return "'" + strings.ReplaceAll(v, "'", "''") + "'" }
 
 // ConnString makes the rclone connection string of a node; the options rclone wants obscured (passwords) are obscured here, so that the clear text never has to be given in another form.
@@ -196,15 +203,22 @@ func (n NodeSpec) ConnString() (string, error) {
 			pw[o.Name] = true
 		}
 	}
-	keys := make([]string, 0, len(n.Options))
-	for k := range n.Options {
+	opts := map[string]string{}
+	for k, v := range backendDefaults[n.Backend] {
+		opts[k] = v
+	}
+	for k, v := range n.Options {
+		opts[k] = v
+	}
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	var b strings.Builder
 	b.WriteString(":" + n.Backend)
 	for _, k := range keys {
-		v := n.Options[k]
+		v := opts[k]
 		if pw[k] && v != "" {
 			var err error
 			if v, err = obscure.Obscure(v); err != nil {

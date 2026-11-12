@@ -17,6 +17,8 @@ Also built: `blobgate validate` (what a node can do, before it is put in a store
 
 Also built: sealing of the blocks of a store on the fly (docs/encryption.md); a restore that names the older backups when the newest is damaged, `verify -all`, `restore -id`, `-fallback`.
 
+Measured against the Nim module on the same stand (docs/benchmark.md): writes several times faster, reads the same, memory 75 MB against 47 MB (not as good).
+
 Not built yet: Prometheus metrics; the Nim process tests against this binary (they start Caddy nodes, which this module does not use); tests with servers other than SFTPGo and Garage (the error words of a full disk are matched by text and are known only from the documentation of the protocols); speed and memory;
 a Dockerfile and the pipeline; the end of the pass on SIGTERM waits for the pass in progress (a long pass delays the stop).
 

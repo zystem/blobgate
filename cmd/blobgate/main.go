@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,10 @@ func envInt(name string, def int64) int64 {
 }
 
 func main() {
+	// blocks of up to 8 MiB are held while they are read and sealed, so the heap is mostly short-lived buffers: collect when it has grown a quarter, not a whole (GOGC overrides this)
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(25)
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "validate":
