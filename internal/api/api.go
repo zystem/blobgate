@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/space"
 	"github.com/zystem/blobgate/internal/store"
@@ -201,12 +202,14 @@ func (w *statusWriter) Flush() {
 }
 
 // logged writes one structured line per request: method, store, key without the shard, status, duration, bytes. No token, no secret.
-func (s *Server) logged(h http.Handler) http.Handler {
+func (s *Server) logged(h http.Handler, shim bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
 		h.ServeHTTP(sw, r)
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		route := metrics.Route(r.Method, r.URL.Path, r.URL.Query(), shim)
+		metrics.Request(route, r.Method, sw.code, time.Since(start), max(r.ContentLength, 0), sw.bytes)
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
 			return
 		}
 		s.log.Info("request", "method", r.Method, "path", logPath(r.URL.Path), "status", sw.code, "ms", time.Since(start).Milliseconds(), "bytes_out", sw.bytes, "bytes_in", max(r.ContentLength, 0))
@@ -234,12 +237,19 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write(openapiYAML)
 	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if len(s.cfg.AdminToken) < 16 || !equal(bearer(r), s.cfg.AdminToken) {
+			problem(w, 401, "unauthorized", "the admin token is wrong or none")
+			return
+		}
+		metrics.Handler().ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/v1/stores", s.listStores)
 	mux.HandleFunc("/v1/stores/", s.coreObject)
 	mux.HandleFunc("/v1/admin/stores", s.admin)
 	mux.HandleFunc("/v1/admin/stores/", s.admin)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found", "no such route") })
-	return s.logged(mux)
+	return s.logged(mux, false)
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {

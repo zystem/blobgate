@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zystem/blobgate/internal/layout"
+	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/store"
 )
@@ -115,12 +116,14 @@ func (w *Worker) Run(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		if ok, err := w.Lease(ctx, "repair"); err != nil || !ok {
+		ok, err := w.Lease(ctx, "repair")
+		metrics.Lease("repair", err == nil && ok)
+		if err != nil || !ok {
 			continue
 		}
 		w.Pass(ctx)
 		if w.cfg.Now().Sub(lastCheck) >= w.cfg.CheckEvery {
-			w.CheckPass(ctx)
+			metrics.CheckMade(w.CheckPass(ctx))
 			lastCheck = w.cfg.Now()
 		}
 	}
@@ -130,6 +133,7 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) Pass(ctx context.Context) {
 	done, failed := w.RepairPass(ctx)
 	swept := w.SweepPass(ctx)
+	metrics.Swept(swept)
 	if done+failed+swept > 0 {
 		w.cfg.Log.Info("maintenance", "repaired", done, "failed", failed, "swept_uploads", swept)
 	}
@@ -155,9 +159,11 @@ func (w *Worker) RepairPass(ctx context.Context) (done, failed int) {
 		switch err := w.do(ctx, t); err {
 		case nil:
 			w.settle(ctx, t, true, "")
+			metrics.Repair(true)
 			done++
 		default:
 			w.settle(ctx, t, false, err.Error())
+			metrics.Repair(false)
 			failed++
 		}
 	}

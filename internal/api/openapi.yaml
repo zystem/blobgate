@@ -313,6 +313,13 @@ paths:
       responses:
         "200": {description: "{store, nodes, files, expected, strays: [{node, dir, files, bytes, newest, recent}], unknown_files, queued}"}
         "404": {description: no_such_store}
+  /metrics:
+    get:
+      summary: Prometheus metrics (docs/metrics.md); also on a port of its own with no token, `CINIM_STORAGE_METRICS_PORT`
+      security: [{adminToken: []}]
+      responses:
+        "200": {description: the metrics in the Prometheus text format}
+        "401": {$ref: "#/components/responses/Unauthorized"}
   /v1/openapi.yaml:
     get:
       summary: this description

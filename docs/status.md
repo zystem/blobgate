@@ -19,8 +19,10 @@ Also built: sealing of the blocks of a store on the fly (docs/encryption.md); a 
 
 Measured against the Nim module on the same stand (docs/benchmark.md): writes several times faster, reads the same, memory 75 MB against 47 MB (not as good).
 
-Not built yet: Prometheus metrics; the Nim process tests against this binary (they start Caddy nodes, which this module does not use); tests with servers other than SFTPGo and Garage (the error words of a full disk are matched by text and are known only from the documentation of the protocols); speed and memory;
-a Dockerfile and the pipeline; the end of the pass on SIGTERM waits for the pass in progress (a long pass delays the stop).
+Also built: Prometheus metrics (docs/metrics.md), the image (`Dockerfile`: static, user 65532, read-only root; run for real with the try-it of the README), the README and the reference pages, a test that a setting, a metric, a command or an error code without a line in the docs fails the build.
+
+Not built yet: the Nim process tests against this binary (they start Caddy nodes, which this module does not use); tests with servers other than SFTPGo and Garage (the error words of a full disk are matched by text and are known only from the documentation of the protocols); speed and memory;
+the pipeline (CiNim's `.ci/pipeline.lua`) and the chart; the end of the pass on SIGTERM waits for the pass in progress (a long pass delays the stop).
 
 Known limits: a read holds one block (at most 8 MiB) in memory for each read going on (`CINIM_STORAGE_THREADS`, default 8, bounds them); node names with a difference of case only meet on a node that folds case; a node that is merely
 unreachable during the check gets a `copy` task like one that lost its disk, and the task is put off with a growing pause.

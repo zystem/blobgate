@@ -557,7 +557,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	}
 	// what the server does answer, as (method, template of the path): the concrete requests below are made from the templates
 	impl := []string{
-		"GET /healthz", "GET /readyz", "GET /v1/openapi.yaml", "GET /v1/stores",
+		"GET /healthz", "GET /readyz", "GET /metrics", "GET /v1/openapi.yaml", "GET /v1/stores",
 		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
 		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default", "POST /v1/admin/stores/{name}:reconcile",
 	}
@@ -579,6 +579,8 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 		var code int
 		var data []byte
 		switch {
+		case p == "/metrics":
+			code, data, _ = r.do(m, p, map[string]string{"Authorization": "Bearer " + adminT}, nil)
 		case strings.HasPrefix(p, "/v1/admin/"):
 			code, data = r.admin(m, p, map[string]any{"kind": "mirror", "nodes": []any{map[string]any{"remote": ":local:" + r.nodes[0]}}})
 		case strings.HasPrefix(p, "/v1/stores"):

@@ -20,6 +20,7 @@ import (
 	"github.com/zystem/blobgate/internal/backup"
 	"github.com/zystem/blobgate/internal/db"
 	"github.com/zystem/blobgate/internal/maint"
+	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/seal"
 	"github.com/zystem/blobgate/internal/store"
@@ -50,10 +51,12 @@ func main() {
 		switch os.Args[1] {
 		case "validate":
 			os.Exit(validate(os.Args[2:]))
+		case "token":
+			os.Exit(tokenCommand(os.Args[2:]))
 		case "backup", "backups", "verify", "restore":
 			os.Exit(backupCommand(os.Args[1], os.Args[2:]))
 		case "-h", "--help", "help":
-			fmt.Println(validateUsage + "\n\n" + backupUsage)
+			fmt.Println(validateUsage + "\n\n" + backupUsage + "\n\n" + tokenUsage)
 			return
 		}
 	}
@@ -117,6 +120,7 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 	reg := store.NewRegistry(c, seal.Key(sealText))
+	metrics.RegisterDB(c, 15*time.Second)
 	sec := func(name string, def int64) time.Duration { return time.Duration(envInt(name, def)) * time.Second }
 	srv := api.New(api.Config{ShardSecrets: secrets, AdminToken: admin, Reserve: envInt("CINIM_STORAGE_RESERVE_BYTES", 0),
 		MaxReads: int(envInt("CINIM_STORAGE_THREADS", 0)), UploadTTL: sec("CINIM_STORAGE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
@@ -138,6 +142,12 @@ func main() {
 	if shimPort > 0 {
 		// its own pool and socket timeouts (30 s), so that step code cannot take what the core's calls need
 		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", shimPort), Handler: srv.ShimHandler(), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second})
+	}
+	// the metrics on a port of their own, with no token, for a scraper inside the cluster (off by default; /metrics on the main port wants the admin token)
+	if mp := envInt("CINIM_STORAGE_METRICS_PORT", 0); mp > 0 {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metrics.Handler())
+		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", mp), Handler: mux, ReadHeaderTimeout: 10 * time.Second})
 	}
 	errc := make(chan error, len(servers))
 	for _, s := range servers {
@@ -219,6 +229,7 @@ func backupLoop(ctx context.Context, w *maint.Worker, url string, every time.Dur
 			log.Error("backup failed", "error", err.Error())
 			continue
 		}
+		metrics.BackupWritten(time.Now())
 		log.Info("backup written", "id", m.ID, "bytes", m.RawSize, "blocks", len(m.Blocks))
 	}
 }

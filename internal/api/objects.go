@@ -16,6 +16,7 @@ import (
 
 	"github.com/zystem/blobgate/internal/auth"
 	"github.com/zystem/blobgate/internal/layout"
+	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/space"
 	"github.com/zystem/blobgate/internal/store"
@@ -126,7 +127,12 @@ func (s *Server) object(w http.ResponseWriter, r *http.Request, shard, st, key s
 
 // noRoom is the 507 of a store that would be left with less than the reserve; nil when it fits or the store does not say.
 func (s *Server) noRoom(ctx context.Context, m *store.Mirror, need int64) *herr {
-	if why := space.Problem(m.Free(ctx), need, s.cfg.Reserve, m.Name); why != "" {
+	info := m.Free(ctx)
+	if info.Known {
+		metrics.Room(m.Name, info.Free, info.Total)
+	}
+	if why := space.Problem(info, need, s.cfg.Reserve, m.Name); why != "" {
+		metrics.Refused("store_full")
 		return &herr{507, "store_full", why}
 	}
 	return nil
@@ -145,6 +151,7 @@ func (s *Server) queue(ctx context.Context, st, key, op string, nodes []*store.N
 func putFailure(err error) *herr {
 	var ns *store.ErrNoSpace
 	if errors.As(err, &ns) {
+		metrics.Refused("store_full")
 		return &herr{507, "store_full", ns.Error()}
 	}
 	return &herr{503, "unavailable", err.Error()}

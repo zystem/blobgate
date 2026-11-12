@@ -14,6 +14,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/object"
 
+	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/space"
 )
 
@@ -175,6 +176,7 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 		}
 		res.Failed = append(res.Failed, node)
 		res.Errs = append(res.Errs, e)
+		metrics.NodeError(m.Name, node.ID, "write")
 	}
 	if srcErr != nil {
 		return res, srcErr
@@ -211,6 +213,7 @@ func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64)
 			missing++
 		default:
 			failures = append(failures, node.ID+": "+err.Error())
+			metrics.NodeError(m.Name, node.ID, "read")
 		}
 	}
 	if len(failures) == 0 && missing == len(m.Nodes) {
