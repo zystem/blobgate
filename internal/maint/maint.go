@@ -24,11 +24,12 @@ type Config struct {
 	CheckSlice  int           // objects in a slice (200)
 	Deep        bool          // the check reads the blocks and compares their SHA-256, not only their size
 	DeepBytesPS int64         // the most the deep check reads in a second (0: no limit)
+	LeaseFor    time.Duration // how long a hold lasts without being renewed (120 s)
 	Now         func() time.Time
 	Log         *slog.Logger
 }
 
-// LeaseSeconds is how long a hold lasts without being renewed.
+// LeaseSeconds is how long a hold lasts without being renewed, unless Config.LeaseFor says another.
 const LeaseSeconds = 120
 
 const maxPause = time.Hour
@@ -59,6 +60,9 @@ func New(cfg Config, db *rq.Client, reg *store.Registry) *Worker {
 	if cfg.UploadTTL <= 0 {
 		cfg.UploadTTL = 24 * time.Hour
 	}
+	if cfg.LeaseFor <= 0 {
+		cfg.LeaseFor = LeaseSeconds * time.Second
+	}
 	if cfg.CheckSlice <= 0 {
 		cfg.CheckSlice = 200
 	}
@@ -75,7 +79,7 @@ func (w *Worker) now() int64 { return w.cfg.Now().Unix() }
 
 // Lease takes or renews the hold of the named job; false when another replica holds it.
 func (w *Worker) Lease(ctx context.Context, name string) (bool, error) {
-	return w.LeaseFor(ctx, name, LeaseSeconds*time.Second)
+	return w.LeaseFor(ctx, name, w.cfg.LeaseFor)
 }
 
 // LeaseFor is Lease for a hold of another length (a job that runs rarely holds its lease until the next time it is due).
@@ -97,7 +101,7 @@ func (w *Worker) Release(ctx context.Context, name string) {
 
 // stillMine renews the hold when it is half spent, so that a long pass keeps it; false when it was lost.
 func (w *Worker) stillMine(ctx context.Context) bool {
-	if w.cfg.Now().Sub(w.renewedAt) < LeaseSeconds*time.Second/2 {
+	if w.cfg.Now().Sub(w.renewedAt) < w.cfg.LeaseFor/2 {
 		return true
 	}
 	ok, err := w.Lease(ctx, "repair")

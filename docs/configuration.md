@@ -27,6 +27,7 @@ Reference page. Every setting is an environment variable; a change needs a resta
 | `CINIM_STORAGE_CHECK_SECONDS` | `600` | How often a slice (200 objects) of the inventory is checked against the nodes. |
 | `CINIM_STORAGE_DEEP_CHECK` | `0` | `1`: the check reads the blocks and compares their SHA-256, not only their size. Reads a lot. |
 | `CINIM_STORAGE_DEEP_CHECK_BYTES_PER_SECOND` | `0` (no limit) | The most the deep check reads in a second. |
+| `CINIM_STORAGE_LEASE_SECONDS` | `120` | How long the replica that does the repair holds its lease without renewing it. When it dies, another takes over after this time. Shorter is quicker to take over and more sensitive to a pause of the database. It must be longer than `CINIM_STORAGE_REPAIR_SECONDS`. |
 | `CINIM_STORAGE_UPLOAD_TTL_SECONDS` | `86400` | An upload that has not ended after this is swept: its blocks are removed. |
 
 ## Backups of the database (docs/backup.md)

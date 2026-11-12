@@ -125,7 +125,7 @@ func main() {
 	srv := api.New(api.Config{ShardSecrets: secrets, AdminToken: admin, Reserve: envInt("CINIM_STORAGE_RESERVE_BYTES", 0),
 		MaxReads: int(envInt("CINIM_STORAGE_THREADS", 0)), UploadTTL: sec("CINIM_STORAGE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
 	host, _ := os.Hostname()
-	worker := maint.New(maint.Config{HolderID: fmt.Sprintf("%s-%d", host, os.Getpid()), RepairEvery: sec("CINIM_STORAGE_REPAIR_SECONDS", 60), CheckEvery: sec("CINIM_STORAGE_CHECK_SECONDS", 600),
+	worker := maint.New(maint.Config{HolderID: fmt.Sprintf("%s-%d", host, os.Getpid()), RepairEvery: sec("CINIM_STORAGE_REPAIR_SECONDS", 60), LeaseFor: sec("CINIM_STORAGE_LEASE_SECONDS", 120), CheckEvery: sec("CINIM_STORAGE_CHECK_SECONDS", 600),
 		RetryBase: sec("CINIM_STORAGE_REPAIR_RETRY_SECONDS", 30), UploadTTL: sec("CINIM_STORAGE_UPLOAD_TTL_SECONDS", 24*3600), Deep: envInt("CINIM_STORAGE_DEEP_CHECK", 0) == 1,
 		DeepBytesPS: envInt("CINIM_STORAGE_DEEP_CHECK_BYTES_PER_SECOND", 0), Log: log}, c, reg)
 	var bg sync.WaitGroup

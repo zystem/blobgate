@@ -25,6 +25,11 @@ tried at once, and the task is taken out of the queue by the node that did it. N
 A node that cannot take a write while the others do (with `min_acks` below the number of nodes) gets a `copy` task; the repair pass reads the block from a node that has it, checks its SHA-256 against
 the database and writes it.
 
+Besides the stops at named points, the program as a process is killed with SIGKILL in the middle of a block of 8 MiB, of a new object and of the replacement of one (`TestKillNineInTheMiddleOfAWrite`,
+`cmd/blobgate/process_test.go`, with a real rqlite): after the restart the object that was there is as it was, the one that was not is not, and the blocks the dead writer left (partial files, seen on the
+nodes before the restart) are removed by the sweep. With two replicas, the one that holds the lease is killed and the other takes the lease when it runs out and does the repair that was waiting
+(`TestTheReplicaThatTakesOver`, `CINIM_STORAGE_LEASE_SECONDS`).
+
 ## What a read trusts
 
 Nothing on a node. A file that exists is not a file that is complete (a killed writer leaves a partial file under the final name on FTP, WebDAV and SFTP: docs/rclone-probe.md). A read takes a whole
