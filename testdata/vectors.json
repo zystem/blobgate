@@ -1,0 +1,50 @@
+{
+  "token": [
+    {
+      "secret": "the-secret-of-shard-001",
+      "shard": "001",
+      "method": "PUT",
+      "target": "/v1/stores/main/objects/acme/s1_x/dist/app.txt",
+      "now": 1700000000,
+      "token": "v1.1700000120.ddda20f6d49a35035a2608ca304bed5a9cd38116302263e89f24e2cdfdd2d413"
+    },
+    {
+      "secret": "s2",
+      "shard": "002",
+      "method": "get",
+      "target": "/v1/stores/_default/objects/a%20b/c?stat",
+      "now": 1700000000,
+      "token": "v1.1700000120.e829453b9bd637a38da81421a9e7de0f4fec468cfaf48864d80f484646cedad2"
+    },
+    {
+      "secret": "the-secret-of-shard-001",
+      "shard": "001",
+      "method": "GET",
+      "target": "/v1/stores/m/objects/k?upload=u1&parts",
+      "now": 1700000000,
+      "token": "v1.1700000120.8b31b8695c63196794e136f6a4f07b7a9da70f40acb47829e84907b3b4b43fc3"
+    }
+  ],
+  "grant": [
+    {
+      "secret": "the-secret-of-shard-001",
+      "shard": "001",
+      "store": "main",
+      "key": "acme/s1/a.bin",
+      "upload": "up-1",
+      "mode": "w",
+      "now": 1700000000,
+      "token": "g1.001.1700007200.fa9fb4143dded4f63ec77e34020483df1143650228227a36121e9f267e3305b2"
+    },
+    {
+      "secret": "the-secret-of-shard-001",
+      "shard": "001",
+      "store": "main",
+      "key": "acme/s1/a.bin",
+      "upload": "",
+      "mode": "r",
+      "now": 1700000000,
+      "token": "g1.001.1700007200.21f67f0a680025099678459d678cc782d62ab34dea436fcddedc621301dc9058"
+    }
+  ]
+}

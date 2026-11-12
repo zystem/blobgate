@@ -1,0 +1,306 @@
+openapi: 3.0.3
+info:
+  title: cinim-storage module API
+  version: "1"
+  description: |
+    The contract of the storage module (docs/storage-module.md), written down so that the Nim module and its Go replacement (blobgate) can be checked against one description.
+    The module serves three kinds of caller on two ports:
+
+    * the core, on `CINIM_STORAGE_PORT` (18090), with a signed token per request (`coreToken`);
+    * the operator, on the same port, with the admin token (`adminToken`);
+    * a step's shim, on `CINIM_STORAGE_SHIM_PORT` (18091), with a grant made by the core (`shimGrant`): only `PUT` of a part and `GET` of a range.
+
+    The shard is part of every key in the store: the object `acme/s1/app.txt` of shard `001` lies as `001/acme/s1/app.txt`.
+    Every error is `{"error": "<code>", "detail": "<words>"}`.
+    The token strings are fixed byte for byte, see the schemes.
+servers:
+  - url: http://localhost:18090
+    description: the core's and the operator's port
+components:
+  securitySchemes:
+    coreToken:
+      type: http
+      scheme: bearer
+      description: |
+        `Bearer v1.<expires>.<mac>` with `X-Cinim-Shard: <digits>`. mac = hex(HMAC-SHA256(secret of the shard, `cinim/storage/v1|<len shard>|<shard>|<METHOD>|<len target>|<target>|<expires>`)),
+        target = the decoded path plus `?` and the query as sent. Valid 120 s, clock skew allowed 30 s (`common/storagetoken.nim`).
+    adminToken:
+      type: http
+      scheme: bearer
+      description: 'the plain token of `CINIM_STORAGE_ADMIN_TOKEN` (at least 16 characters); the core does not hold it.'
+    shimGrant:
+      type: http
+      scheme: bearer
+      description: |
+        `Bearer g1.<shard>.<expires>.<mac>` made by the core for one upload (to put its parts) or one object (to read it); mac over `cinim/storage/grant/v1|...` (shard, store, key, upload, mode),
+        valid two hours (`common/storagetoken.nim`).
+  parameters:
+    shard:
+      name: X-Cinim-Shard
+      in: header
+      required: true
+      schema: {type: string, pattern: "^[0-9]+$"}
+    store:
+      name: store
+      in: path
+      required: true
+      description: 'a store''s name, or `_default` for the default store (not on the shim port)'
+      schema: {type: string}
+    key:
+      name: key
+      in: path
+      required: true
+      description: 'relative, no empty, `.` or `..` parts, at most 1024 characters'
+      schema: {type: string}
+    sha256:
+      name: X-Content-SHA256
+      in: header
+      required: true
+      description: hex SHA-256 of the body, lowercase, sent before the body; the module checks it as it streams
+      schema: {type: string, pattern: "^[0-9a-f]{64}$"}
+    upload:
+      name: upload
+      in: query
+      schema: {type: string}
+    part:
+      name: part
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 10000}
+  schemas:
+    Error:
+      type: object
+      required: [error, detail]
+      properties:
+        error:
+          type: string
+          description: |
+            unauthorized, no_such_object, no_such_store, not_configured, invalid_key, invalid_request, invalid_part, invalid_range, range_required, sha256_required, sha256_mismatch,
+            empty_body, too_large, store_full, storage_unreachable, store_in_use, unavailable, database_unavailable, method_not_allowed, not_found, unreadable
+        detail: {type: string}
+    Size:
+      type: object
+      required: [size]
+      properties: {size: {type: integer, format: int64}}
+    StoreSummary:
+      type: object
+      properties:
+        name: {type: string}
+        kind: {type: string, description: "s3, dav (the Nim module); the Go module adds mirror"}
+        default: {type: boolean}
+    StoreAdmin:
+      type: object
+      properties:
+        name: {type: string}
+        kind: {type: string}
+        default: {type: boolean}
+        endpoint: {type: string}
+        region: {type: string}
+        bucket: {type: string}
+        access_key_id: {type: string}
+        nodes: {type: array, items: {type: string}}
+        min_acks: {type: integer}
+        objects: {type: integer}
+        space_url: {type: string}
+        repair_pending: {type: integer, description: only for a mirror}
+    StoreSettings:
+      type: object
+      description: the secret is sealed at rest and never returned
+      properties:
+        kind: {type: string, default: s3}
+        endpoint: {type: string}
+        region: {type: string, default: garage}
+        bucket: {type: string}
+        access_key_id: {type: string}
+        secret_access_key: {type: string}
+        space_url: {type: string}
+        nodes: {type: array, items: {type: string}}
+        token: {type: string}
+        min_acks: {type: integer}
+        default: {type: boolean}
+  responses:
+    Problem:
+      description: an error
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Unauthorized:
+      description: the token or grant is wrong, expired or not for this call
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    StoreFull:
+      description: 507 store_full, nothing was written; the detail says in words what is wrong and what to do. Two causes - the module knew beforehand that the block would not fit (the node says how much room it has, and less than the reserve would be left), or a node that cannot say reported at the write that it is out of space (disk full, FTP 552, WebDAV 507, a quota) and too few nodes took the block
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Unavailable:
+      description: 'the store or the database did not answer; `Retry-After` is set (the core retries 5xx and 429, but not 507)'
+      headers:
+        Retry-After: {schema: {type: integer}}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+paths:
+  /healthz:
+    get:
+      summary: liveness
+      security: []
+      responses:
+        "200": {description: '{"status":"ok"}'}
+  /readyz:
+    get:
+      summary: readiness (the database answers)
+      security: []
+      responses:
+        "200": {description: '{"status":"ready"}'}
+        "503": {description: '{"status":"not_ready"}'}
+  /v1/stores:
+    get:
+      summary: the stores and the default one, no secrets
+      security: [{coreToken: []}]
+      parameters: [{$ref: "#/components/parameters/shard"}]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stores: {type: array, items: {$ref: "#/components/schemas/StoreSummary"}}
+                  default: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /v1/stores/{store}/objects/{key}:
+    parameters:
+      - {$ref: "#/components/parameters/shard"}
+      - {$ref: "#/components/parameters/store"}
+      - {$ref: "#/components/parameters/key"}
+    put:
+      summary: 'put an object in one call (1 byte to 8 MiB), or a part of a multipart upload with `?upload=<id>&part=<n>`'
+      security: [{coreToken: []}]
+      parameters:
+        - {$ref: "#/components/parameters/sha256"}
+        - {$ref: "#/components/parameters/upload"}
+        - {$ref: "#/components/parameters/part"}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: {schema: {type: string, format: binary}}
+      responses:
+        "200":
+          description: "an object: {size}; a part: {etag} (the etag names the part's digest and length)"
+        "400": {description: "sha256_required, sha256_mismatch (the object is not left behind), invalid_key, invalid_part, empty_body", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {description: no_such_store}
+        "409": {description: not_configured}
+        "413": {description: too_large (above 8 MiB)}
+        "502": {description: the store said no}
+        "503": {$ref: "#/components/responses/Unavailable"}
+        "507": {$ref: "#/components/responses/StoreFull"}
+    get:
+      summary: |
+        read a range (`Range: bytes=a-b`, both ends, at most 256 MiB, answered 206 as a chunked stream), `?stat` for the size, or `?upload=<id>&parts` for the digests the module made of the parts it received (D-61)
+      security: [{coreToken: []}]
+      parameters:
+        - {name: Range, in: header, schema: {type: string, example: "bytes=0-8388607"}}
+        - {name: stat, in: query, allowEmptyValue: true, schema: {type: string}}
+        - {name: parts, in: query, allowEmptyValue: true, schema: {type: string}}
+        - {$ref: "#/components/parameters/upload"}
+      responses:
+        "200":
+          description: "`?stat`: {size}; `?parts`: {parts: [{part, sha256, size}]}"
+        "206": {description: 'the bytes of the range, `Content-Type: application/octet-stream`, `Transfer-Encoding: chunked`'}
+        "400": {description: range_required, invalid_range}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {description: no_such_object, no_such_store}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      summary: "`?uploads[&size=<bytes>]` begins a multipart upload; `?upload=<id>` completes it"
+      security: [{coreToken: []}]
+      parameters:
+        - {name: uploads, in: query, allowEmptyValue: true, schema: {type: string}}
+        - {name: size, in: query, schema: {type: integer, format: int64}, description: the size of the whole object when known, counted by the room check}
+        - {$ref: "#/components/parameters/upload"}
+      requestBody:
+        description: "complete only: {\"parts\": [[1, \"etag\"], ...]}, at most 10000 parts, at most 1 MiB"
+        content:
+          application/json: {schema: {type: object}}
+      responses:
+        "200": {description: "begin: {upload_id}; complete: {size}"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+        "507": {$ref: "#/components/responses/StoreFull"}
+    delete:
+      summary: 'delete the object (one that is not there is fine: {deleted: true}), or abort an upload with `?upload=<id>` ({aborted: true})'
+      security: [{coreToken: []}]
+      parameters: [{$ref: "#/components/parameters/upload"}]
+      responses:
+        "200": {description: done}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /v1/admin/stores:
+    get:
+      summary: the stores with the number of objects and the repair queue
+      security: [{adminToken: []}]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {stores: {type: array, items: {$ref: "#/components/schemas/StoreAdmin"}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /v1/admin/stores/{name}:
+    parameters: [{name: name, in: path, required: true, schema: {type: string, pattern: "^[a-z][a-z0-9-]{0,31}$"}}]
+    put:
+      summary: 'try the settings (a round trip), then keep them; POST does the same (the chart''s registration scripts have only `wget`)'
+      security: [{adminToken: []}]
+      requestBody:
+        content: {application/json: {schema: {$ref: "#/components/schemas/StoreSettings"}}}
+      responses:
+        "200": {description: "{name, checked: true}"}
+        "400": {description: invalid_request, storage_unreachable (the message says what the store lacks)}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    delete:
+      summary: 'forget the store; refused with 409 store_in_use while it holds objects unless `?force=1`'
+      security: [{adminToken: []}]
+      parameters: [{name: force, in: query, schema: {type: string}}]
+      responses:
+        "200": {description: "{deleted: true, name}"}
+        "404": {description: no_such_store}
+        "409": {description: store_in_use}
+  /v1/admin/stores/{name}:check:
+    post:
+      summary: the round trip again
+      security: [{adminToken: []}]
+      parameters: [{name: name, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: "{ok: true, name, kind}"}
+        "404": {description: no_such_store}
+        "502": {description: storage_unreachable}
+  /v1/admin/stores/{name}:default:
+    post:
+      summary: make it the default store
+      security: [{adminToken: []}]
+      parameters: [{name: name, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: "{name, default: true}"}
+        "404": {description: no_such_store}
+  /v1/internal/node-auth:
+    get:
+      summary: 'the `forward_auth` call of a Caddy node (the Nim module only; the Go module does not have it)'
+      deprecated: true
+      security: []
+      parameters: [{name: node, in: query, schema: {type: string}}]
+      responses:
+        "200": {description: "body `ok`"}
+        "401": {description: "body `no`"}
+x-shim-port:
+  description: |
+    The second port (`CINIM_STORAGE_SHIM_PORT`, 18091, plain HTTP, its own pool, socket timeouts 30 s). Nothing else is open there.
+    `PUT /s/{store}/{key}?upload=<id>&part=<n>` with `X-Content-SHA256` and a `g1` grant of mode `w`: 200 {etag}; 400 invalid_part, sha256_required, sha256_mismatch, empty_body; 413; 507 store_full.
+    The module keeps (sha256, size) of the part in `storage_parts`, and the core compares them with what the shim reported before it completes the upload.
+    `GET /s/{store}/{key}` with `Range: bytes=a-b` and a grant of mode `r`: 206 chunked stream; 400 range_required, invalid_range.
+    `GET /healthz`. Any other route is 404 not_found; a wrong, expired or foreign grant is 401 unauthorized; `_default` is not a store name here.
