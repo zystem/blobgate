@@ -26,7 +26,7 @@ An object is a row in rqlite and a set of blocks (files) on the nodes. The row i
 ## Try it (a minute, no hardware, Docker only)
 
 ```bash
-docker build -t blobgate .
+docker build -t blobgate .        # or use ghcr.io/zystem/blobgate:<version>
 docker run -d --name rq -p 4001:4001 rqlite/rqlite -fk -disco-mode=
 docker run -d --name blobgate --network host --read-only --tmpfs /data:rw,mode=1777,size=2g \
   -e CINIM_RQLITE_URL=http://127.0.0.1:4001 -e CINIM_STORAGE_PORT=18090 \
@@ -82,9 +82,10 @@ Run on 2026-11-12 with the image of this repository, as shown. Next: [connect a 
 
 | Way | For | Notes |
 |---|---|---|
-| `docker build` of the `Dockerfile` | production | static program, no shell, user 65532, works with a read-only root; the module writes nothing to a disk |
-| `go build ./cmd/blobgate` (Go 1.26) | tests, a workstation | `go test ./...` skips what needs Docker or rqlite unless `CINIM_RQLITE_URL` and `BLOBGATE_DOCKER_TESTS=1` are set |
-| the chart of CiNim | a cluster | not made yet |
+| the image `ghcr.io/zystem/blobgate:<version>` | production | linux/amd64 and linux/arm64; static program, no shell, user 65532, works with a read-only root; the module writes nothing to a disk |
+| the chart `oci://ghcr.io/zystem/charts/blobgate` (`helm install blobgate oci://ghcr.io/zystem/charts/blobgate --version <version> -f values.yaml`) | a cluster | [charts/blobgate/values.yaml](charts/blobgate/values.yaml) says every value; `rqliteUrl` and a Secret (or `secrets`) are needed |
+| the program from the [releases](https://github.com/zystem/blobgate/releases) | a workstation, a VM | `blobgate_<version>_linux_<arch>.tar.gz` with `checksums.txt` |
+| `docker build .` or `go build ./cmd/blobgate` (Go 1.26) | tests, changes | `go test ./...` skips what needs Docker or rqlite unless `CINIM_RQLITE_URL` and `BLOBGATE_DOCKER_TESTS=1` are set |
 
 ## Words
 
@@ -106,4 +107,5 @@ Run on 2026-11-12 with the image of this repository, as shown. Next: [connect a 
 | keep it safe | [docs/backup.md](docs/backup.md) |
 | watch it | [docs/metrics.md](docs/metrics.md) |
 | judge its speed | [docs/benchmark.md](docs/benchmark.md) |
+| make a release | [docs/release.md](docs/release.md) |
 | change it | [docs/README.md](docs/README.md) (the list of pages and their kinds), [docs/status.md](docs/status.md) (what is built and what is not) |

@@ -26,6 +26,9 @@ import (
 	"github.com/zystem/blobgate/internal/store"
 )
 
+// version is set at build time (-ldflags "-X main.version=1.2.3"); "dev" is a build that was not made for a release.
+var version = "dev"
+
 func fatal(msg string) {
 	fmt.Fprintln(os.Stderr, "storage: "+msg)
 	os.Exit(2)
@@ -51,6 +54,9 @@ func main() {
 		switch os.Args[1] {
 		case "validate":
 			os.Exit(validate(os.Args[2:]))
+		case "version", "-v", "--version":
+			fmt.Println("blobgate", version)
+			return
 		case "token":
 			os.Exit(tokenCommand(os.Args[2:]))
 		case "backup", "backups", "verify", "restore":
@@ -157,7 +163,7 @@ func main() {
 	for k := range secrets {
 		keys = append(keys, k)
 	}
-	fmt.Println("storage: serving shards", strings.Join(keys, ","), "on port", port)
+	fmt.Println("storage: blobgate", version, "serving shards", strings.Join(keys, ","), "on port", port)
 	select {
 	case <-ctx.Done():
 	case err := <-errc:

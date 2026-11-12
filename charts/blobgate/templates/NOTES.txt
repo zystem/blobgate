@@ -1,0 +1,8 @@
+blobgate {{ .Chart.AppVersion }} is installed as {{ include "blobgate.fullname" . }}.
+
+The Service is {{ include "blobgate.fullname" . }}.{{ .Release.Namespace }}:{{ .Values.config.port }}. The module has no store yet: make one with the admin call, for example
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "blobgate.fullname" . }} {{ .Values.config.port }}
+  curl -X PUT localhost:{{ .Values.config.port }}/v1/admin/stores/main -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"kind":"mirror","default":true,"nodes":[{"remote":":sftp,host=h,user=u:/blobs","secrets":{"pass":"..."}}]}'
+
+(docs/configuration.md in the repository). {{ if eq (int .Values.replicas) 1 }}One replica: no second one takes over the repair when it is down.{{ end }}

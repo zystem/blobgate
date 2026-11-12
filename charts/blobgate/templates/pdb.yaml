@@ -1,0 +1,12 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicas) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "blobgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "blobgate.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "blobgate.selector" . | nindent 6 }}
+{{- end }}

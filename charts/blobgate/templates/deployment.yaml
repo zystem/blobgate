@@ -1,0 +1,97 @@
+{{- if not .Values.rqliteUrl }}{{- fail "rqliteUrl is required: the rqlite the module keeps its records in" }}{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "blobgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "blobgate.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {{- include "blobgate.selector" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels:
+        {{- include "blobgate.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        {{- /* a change of a value of the chart that the Secret is made from restarts the Pods */}}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      terminationGracePeriodSeconds: 40   # the program finishes the requests that are going on for up to 30 s
+      containers:
+        - name: blobgate
+          image: {{ include "blobgate.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: {{ .Values.config.port }}}
+            {{- if .Values.config.shimPort }}
+            - {name: shim, containerPort: {{ .Values.config.shimPort }}}
+            {{- end }}
+            {{- if .Values.config.metricsPort }}
+            - {name: metrics, containerPort: {{ .Values.config.metricsPort }}}
+            {{- end }}
+          env:
+            - {name: CINIM_RQLITE_URL, value: {{ .Values.rqliteUrl | quote }}}
+            - {name: CINIM_STORAGE_PORT, value: {{ .Values.config.port | toString | quote }}}
+            - {name: CINIM_STORAGE_SHIM_PORT, value: {{ .Values.config.shimPort | toString | quote }}}
+            - name: CINIM_STORAGE_SHARDS
+              valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: shards}}
+            - name: CINIM_STORAGE_ADMIN_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: adminToken}}
+            - name: CINIM_STORAGE_SEAL_KEY
+              valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: sealKey}}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_METRICS_PORT" "value" .Values.config.metricsPort) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_THREADS" "value" .Values.config.threads) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_RESERVE_BYTES" "value" .Values.config.reserveBytes) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_REPAIR_SECONDS" "value" .Values.config.repairSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_REPAIR_RETRY_SECONDS" "value" .Values.config.repairRetrySeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_CHECK_SECONDS" "value" .Values.config.checkSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_LEASE_SECONDS" "value" .Values.config.leaseSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_UPLOAD_TTL_SECONDS" "value" .Values.config.uploadTtlSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_DEEP_CHECK" "value" (ternary "1" "" .Values.config.deepCheck)) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_DEEP_CHECK_BYTES_PER_SECOND" "value" .Values.config.deepCheckBytesPerSecond) | nindent 12 }}
+            {{- if .Values.backup.existingSecret }}
+            - name: CINIM_STORAGE_BACKUP_NODES
+              valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: nodes}}
+            - name: CINIM_STORAGE_BACKUP_KEY
+              valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: key}}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_BACKUP_KEEP" "value" .Values.backup.keep) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_BACKUP_SECONDS" "value" .Values.backup.seconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_RESTORE_ON_EMPTY" "value" (ternary "1" "" .Values.backup.restoreOnEmpty)) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_RESTORE_FALLBACK" "value" (ternary "1" "" .Values.backup.restoreFallback)) | nindent 12 }}
+            {{- end }}
+            - name: HOSTNAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 5, timeoutSeconds: 4}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, initialDelaySeconds: 10, periodSeconds: 20, failureThreshold: 6}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      {{- else if gt (int .Values.replicas) 1 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {{- include "blobgate.selector" . | nindent 14 }}
+      {{- end }}

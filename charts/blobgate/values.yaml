@@ -1,0 +1,77 @@
+# The storage module (blobgate). Everything it keeps is in rqlite; it writes nothing to a disk.
+
+image:
+  repository: ghcr.io/zystem/blobgate
+  tag: ""                 # the appVersion of the chart when empty
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""    # the CiNim core expects the Service to be called cinim-storage unless CINIM_STORAGE_URL says otherwise
+
+replicas: 2              # one holds the lease and does the repair; the others serve. 1 is fine for a trial.
+
+# the rqlite the module keeps its records in (required)
+rqliteUrl: ""
+
+# The secrets. Name a Secret that you made (keys: shards, adminToken, sealKey), or let the chart make one from `secrets` below.
+# A value written here is in the values of the release: use `existingSecret` for anything but a trial.
+existingSecret: ""
+secrets:
+  shards: {}              # shard (digits) -> secret of at least 16 characters, e.g. {"001": "..."}
+  adminToken: ""          # at least 16 characters
+  sealKey: ""             # at least 16 characters; keep it apart from the database
+
+# Settings (docs/configuration.md); a number of 0 or an empty string is the program's own default
+config:
+  port: 18090
+  shimPort: 18091        # the port for step shims; 0: none
+  metricsPort: 0         # a port with /metrics and no token, for a scraper inside the cluster; 0: none
+  threads: 0             # reads and sealed writes at once (8)
+  reserveBytes: 0        # room kept free in a store (256 MiB)
+  repairSeconds: 0       # 60
+  repairRetrySeconds: 0  # 30
+  checkSeconds: 0        # 600
+  leaseSeconds: 0        # 120
+  uploadTtlSeconds: 0    # 86400
+  deepCheck: false
+  deepCheckBytesPerSecond: 0
+
+# Backups of the database (docs/backup.md): a Secret with the keys `nodes` (a JSON list of nodes) and `key`
+backup:
+  existingSecret: ""     # empty: no backups
+  keep: 0                # 7
+  seconds: 0             # back up by itself every so many seconds; 0: only by hand (`blobgate backup`)
+  restoreOnEmpty: false  # at start, an rqlite with no table is filled from the newest backup
+  restoreFallback: false # ... and when the newest does not check out the newest that does is taken (the state is then older)
+
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {memory: 512Mi}   # a read or a sealed write holds a block of up to 8 MiB, `config.threads` (8) of them at most; 75 MB measured, 115 MB sealed (docs/benchmark.md)
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []   # empty: the replicas are spread over nodes when there are several
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1                # used when replicas is more than 1
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+networkPolicy:
+  enabled: false
+  # who may call the module: a list of {podSelector, namespaceSelector} as in a NetworkPolicy `from`; empty: any pod of the namespace
+  allowedFrom: []
+  # egress is left open (the nodes of a store can be anywhere); say so here and the chart makes none
+  restrictEgress: false
+
+serviceMonitor:                  # for the Prometheus operator; needs config.metricsPort
+  enabled: false
+  interval: 30s
+  labels: {}

@@ -47,6 +47,7 @@ Reference page. Every setting is an environment variable; a change needs a resta
 | `blobgate backups [-json]` | Lists the backups on the nodes, newest first. |
 | `blobgate verify [-id ID \| -all]` | Reads a backup (or every one) whole and checks it; changes nothing. |
 | `blobgate restore [-id ID] [-fallback] [-force]` | Puts a backup into an empty rqlite (with `-force`, into one that is not). |
+| `blobgate version` | The version of the program (`dev` for a build that is not a release). |
 | `blobgate help` | The usage of all of them. |
 
 ## Admin calls (`Authorization: Bearer $CINIM_STORAGE_ADMIN_TOKEN`)

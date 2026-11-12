@@ -1,0 +1,48 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+env:
+  # renovate: datasource=docker depName=rqlite/rqlite
+  RQLITE_IMAGE: rqlite/rqlite:10.5.1
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: rqlite
+        run: |
+          docker run -d --name rq -p 127.0.0.1:4001:4001 --tmpfs /rqlite/file:rw,size=512m,mode=1777 "$RQLITE_IMAGE" -fk -disco-mode=
+          for _ in $(seq 1 60); do curl -fs http://127.0.0.1:4001/readyz >/dev/null && exit 0; sleep 1; done
+          docker logs rq; exit 1
+      - run: go vet ./...
+      - name: "tests, with the real servers (SFTPGo, Garage, a rqlite for the backups) and the program killed with SIGKILL"
+        env:
+          CINIM_RQLITE_URL: http://127.0.0.1:4001
+          BLOBGATE_DOCKER_TESTS: "1"
+        run: go test -race -count=1 ./...
+
+  chart:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sh tools/test/chart.sh
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build for both platforms (not pushed) and run it read-only
+        run: |
+          docker buildx create --use --driver docker-container >/dev/null
+          docker buildx build --platform linux/amd64,linux/arm64 -t blobgate:ci .
+          docker buildx build --platform linux/amd64 --load -t blobgate:ci .
+          docker run --rm --read-only --cap-drop ALL blobgate:ci version

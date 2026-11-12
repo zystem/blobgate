@@ -51,7 +51,7 @@ func TestEverySettingMetricAndCommandIsDocumented(t *testing.T) {
 		}
 	}
 	cmds := read(t, "../../docs/configuration.md")
-	for _, c := range []string{"validate", "token", "backup", "backups", "verify", "restore", "help"} {
+	for _, c := range []string{"validate", "token", "backup", "backups", "verify", "restore", "version", "help"} {
 		if !strings.Contains(cmds, "blobgate "+c) && !strings.Contains(cmds, "`"+c+"`") {
 			t.Errorf("the command %s is not in docs/configuration.md", c)
 		}
