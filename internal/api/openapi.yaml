@@ -290,6 +290,20 @@ paths:
       responses:
         "200": {description: "{name, default: true}"}
         "404": {description: no_such_store}
+  /v1/admin/stores/{name}:reconcile:
+    post:
+      summary: |
+        list every node of the store and compare it with the database (the check from outside: a node restored from an old backup, a database restored from one). Reports the directories of blocks
+        that no object and no upload refers to, and the files that are in no directory of blocks (never removed). With `?apply` the strays older than `min_age` (seconds, default 86400) are written
+        down for removal; nothing else is touched.
+      security: [{adminToken: []}]
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {name: apply, in: query, allowEmptyValue: true, schema: {type: string}}
+        - {name: min_age, in: query, schema: {type: integer, minimum: 0}}
+      responses:
+        "200": {description: "{store, nodes, files, expected, strays: [{node, dir, files, bytes, newest, recent}], unknown_files, queued}"}
+        "404": {description: no_such_store}
   /v1/openapi.yaml:
     get:
       summary: this description

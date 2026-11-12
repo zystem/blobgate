@@ -15,7 +15,8 @@ import (
 var (
 	ErrNotConfigured = errors.New("not_configured") // the module has no store yet
 	ErrNoSuchStore   = errors.New("no_such_store")
-	ErrUnreadable    = errors.New("unreadable") // the seal key is not the one the settings were sealed with
+	ErrUnreadable    = errors.New("unreadable")   // the seal key is not the one the settings were sealed with
+	ErrNewerLayout   = errors.New("newer_layout") // the store was written by a newer program
 )
 
 // NodeWrites is how many writes one node takes at the same time.
@@ -114,6 +115,7 @@ func (r *Registry) Save(ctx context.Context, name string, cfg Config, sec Secret
 	if why := cfg.Check(sec); why != "" {
 		return why, nil
 	}
+	cfg.Layout = CurrentLayout
 	cj, _ := json.Marshal(cfg)
 	sj, _ := json.Marshal(sec)
 	sealed, err := seal.Seal(r.Key, name, string(sj))
@@ -212,6 +214,9 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 	if json.Unmarshal([]byte(rq.Str(rows[0][0])), &cfg) != nil || json.Unmarshal([]byte(plain), &sec) != nil {
 		return nil, ErrUnreadable
 	}
+	if cfg.Layout > CurrentLayout {
+		return nil, ErrNewerLayout
+	}
 	m, err := Open(ctx, want, cfg, sec)
 	if err != nil {
 		return nil, err
@@ -237,7 +242,7 @@ func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, e
 		if err != nil {
 			return nil, fmt.Errorf("node %s: %w", s.ID(), err)
 		}
-		m.Nodes = append(m.Nodes, &Node{ID: s.ID(), Spec: s, F: f, slots: make(chan struct{}, NodeWrites)})
+		m.Nodes = append(m.Nodes, NewNode(s, f))
 	}
 	return m, nil
 }

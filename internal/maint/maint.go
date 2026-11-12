@@ -74,9 +74,14 @@ func (w *Worker) now() int64 { return w.cfg.Now().Unix() }
 
 // Lease takes or renews the hold of the named job; false when another replica holds it.
 func (w *Worker) Lease(ctx context.Context, name string) (bool, error) {
+	return w.LeaseFor(ctx, name, LeaseSeconds*time.Second)
+}
+
+// LeaseFor is Lease for a hold of another length (a job that runs rarely holds its lease until the next time it is due).
+func (w *Worker) LeaseFor(ctx context.Context, name string, d time.Duration) (bool, error) {
 	n, err := w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_lease (name, holder, until) VALUES (?, ?, ?) "+
 		"ON CONFLICT(name) DO UPDATE SET holder = excluded.holder, until = excluded.until WHERE storage_lease.holder = excluded.holder OR storage_lease.until < ?",
-		name, w.cfg.HolderID, w.now()+LeaseSeconds, w.now()))
+		name, w.cfg.HolderID, w.now()+int64(d/time.Second), w.now()))
 	if err != nil {
 		return false, err
 	}
@@ -186,6 +191,12 @@ func (w *Worker) do(ctx context.Context, t task) error {
 		return err
 	}
 	node := m.NodeByID(t.node)
+	if t.op == "purgepath" { // a directory found by the reconcile, named by its path on the node
+		if node == nil {
+			return nil
+		}
+		return node.RemoveDir(ctx, t.key)
+	}
 	full, gen, n, isBlock, ok := layout.ParseKey(t.key)
 	if node == nil || !ok {
 		return nil

@@ -266,3 +266,78 @@ func TestLease(t *testing.T) {
 		t.Fatal("a after the lease of b ran out")
 	}
 }
+
+// A check from outside: a directory of blocks that the database does not know (a node restored from an old backup) is reported, left alone when it is new or when the call is a dry run, and removed
+// when it is old and `apply` is given. A file that is in no directory of blocks is reported and never removed, and the objects themselves are never touched.
+func TestReconcileFindsStrays(t *testing.T) {
+	r := newRig(t, nil)
+	r.mirror(0)
+	body := pattern(2000)
+	r.put("acme/keep", body)
+	old := time.Now().Add(-72 * time.Hour)
+	plant := func(node int, rel string, mtime time.Time) {
+		p := filepath.Join(r.nodes[node], rel)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		_ = os.WriteFile(p, []byte("stray"), 0o644)
+		_ = os.Chtimes(p, mtime, mtime)
+	}
+	plant(0, "001/ghost/x~0123456789abcdef/0", old)        // an old stray
+	plant(1, "001/fresh/y~fedcba9876543210/0", time.Now()) // a new one: a writer may be at it
+	plant(1, "001/loose-file.txt", old)                    // in no directory of blocks
+	call := func(q string) map[string]any {
+		code, data := r.admin("POST", "/v1/admin/stores/main:reconcile"+q, nil)
+		if code != 200 {
+			t.Fatalf("reconcile %s: %d %s", q, code, data)
+		}
+		var v map[string]any
+		_ = json.Unmarshal(data, &v)
+		return v
+	}
+	rep := call("")
+	if len(rep["strays"].([]any)) != 2 || rep["unknown_files"].(float64) != 1 || rep["queued"].(float64) != 0 {
+		t.Fatalf("dry run: %v", rep)
+	}
+	if _, err := os.Stat(filepath.Join(r.nodes[0], "001/ghost/x~0123456789abcdef/0")); err != nil {
+		t.Fatal("a dry run removed something")
+	}
+	rep = call("?apply")
+	if rep["queued"].(float64) != 1 {
+		t.Fatalf("apply queued %v, want 1 (the old one; the new one is left)", rep["queued"])
+	}
+	w := r.worker("w", nil)
+	w.Lease(context.Background(), "repair")
+	w.Pass(context.Background())
+	if _, err := os.Stat(filepath.Join(r.nodes[0], "001/ghost/x~0123456789abcdef/0")); err == nil {
+		t.Fatal("the old stray was not removed")
+	}
+	for _, keep := range []string{"001/fresh/y~fedcba9876543210/0", "001/loose-file.txt"} {
+		if _, err := os.Stat(filepath.Join(r.nodes[1], keep)); err != nil {
+			t.Fatalf("%s was removed", keep)
+		}
+	}
+	if code, d := r.get("acme/keep", 0, 1999); code != 206 || string(d) != string(body) {
+		t.Fatal("the object was touched")
+	}
+	// with a min_age of 0 the new one goes too
+	rep = call("?apply&min_age=0")
+	w.Pass(context.Background())
+	if _, err := os.Stat(filepath.Join(r.nodes[1], "001/fresh/y~fedcba9876543210/0")); err == nil {
+		t.Fatalf("min_age=0 left it: %v", rep)
+	}
+}
+
+// A store written with a newer layout is refused with words, not read with the old rule.
+func TestNewerLayoutIsRefused(t *testing.T) {
+	r := newRig(t, nil)
+	r.mirror(0)
+	if code, _ := r.put("k/a", []byte("a")); code != 200 {
+		t.Fatal("put")
+	}
+	if _, err := r.dbc.Exec(context.Background(), false, rq.S(`UPDATE storage_stores SET config = json_set(config, '$.layout', 99), updated_at = updated_at + 1`)); err != nil {
+		t.Fatal(err)
+	}
+	code, data := r.put("k/b", []byte("b"))
+	if code != 500 || !strings.Contains(string(data), "newer_layout") {
+		t.Fatalf("%d %s", code, data)
+	}
+}

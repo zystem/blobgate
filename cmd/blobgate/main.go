@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/zystem/blobgate/internal/api"
+	"github.com/zystem/blobgate/internal/backup"
 	"github.com/zystem/blobgate/internal/db"
 	"github.com/zystem/blobgate/internal/maint"
 	"github.com/zystem/blobgate/internal/rq"
@@ -40,6 +41,17 @@ func envInt(name string, def int64) int64 {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "validate":
+			os.Exit(validate(os.Args[2:]))
+		case "backup", "backups", "verify", "restore":
+			os.Exit(backupCommand(os.Args[1], os.Args[2:]))
+		case "-h", "--help", "help":
+			fmt.Println(validateUsage + "\n\n" + backupUsage)
+			return
+		}
+	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	url := os.Getenv("CINIM_RQLITE_URL")
 	if url == "" {
@@ -86,6 +98,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	c := rq.New(url)
+	// a database that is new is filled from the newest backup, when the module is told to (CINIM_STORAGE_RESTORE_ON_EMPTY=1), before it makes its own tables
+	if os.Getenv("CINIM_STORAGE_RESTORE_ON_EMPTY") == "1" {
+		restoreIfEmpty(ctx, url, log)
+	}
 	// the tables: the database may come up after the module does (two minutes)
 	for tries := 0; ; tries++ {
 		if err := db.Migrate(ctx, c); err == nil {
@@ -106,6 +122,10 @@ func main() {
 	var bg sync.WaitGroup
 	bg.Add(1)
 	go func() { defer bg.Done(); worker.Run(ctx) }()
+	if every := sec("CINIM_STORAGE_BACKUP_SECONDS", 0); every > 0 {
+		bg.Add(1)
+		go func() { defer bg.Done(); backupLoop(ctx, worker, url, every, log) }()
+	}
 
 	port := envInt("CINIM_STORAGE_PORT", 18090)
 	shimPort := envInt("CINIM_STORAGE_SHIM_PORT", 18091)
@@ -137,4 +157,63 @@ func main() {
 		_ = s.Shutdown(shut)
 	}
 	bg.Wait() // the worker lets go of its lease when ctx ends
+}
+
+// restoreIfEmpty waits for rqlite (two minutes), and when it has no table fills it from the newest backup. No backup is no reason to stop: the module starts empty.
+func restoreIfEmpty(ctx context.Context, url string, log *slog.Logger) {
+	cfg, err := backup.FromEnv(url)
+	if err != nil {
+		fatal("CINIM_STORAGE_RESTORE_ON_EMPTY is set and the backups are not: " + err.Error())
+	}
+	var empty bool
+	for tries := 0; ; tries++ {
+		if empty, err = backup.IsEmpty(ctx, url); err == nil {
+			break
+		}
+		if tries >= 60 || ctx.Err() != nil {
+			fatal("rqlite does not answer: " + err.Error())
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !empty {
+		return
+	}
+	m, err := backup.Restore(ctx, cfg, "", false)
+	switch {
+	case err == nil:
+		log.Info("the database was empty and was restored", "backup", m.ID, "created", m.Created, "bytes", m.RawSize)
+	case strings.Contains(err.Error(), "no backup was found"):
+		log.Info("the database is empty and there is no backup: starting empty")
+	default:
+		// a backup that cannot be read is not a reason to start on an empty database and make new tables over what the backup would have restored
+		fatal("the database is empty and the restore failed: " + err.Error())
+	}
+}
+
+// backupLoop takes a backup every `every`; one replica at a time (the lease "backup").
+func backupLoop(ctx context.Context, w *maint.Worker, url string, every time.Duration, log *slog.Logger) {
+	cfg, err := backup.FromEnv(url)
+	if err != nil {
+		log.Error("CINIM_STORAGE_BACKUP_SECONDS is set and the backups are not", "error", err.Error())
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			w.Release(context.Background(), "backup")
+			return
+		case <-t.C:
+		}
+		if ok, err := w.LeaseFor(ctx, "backup", every+time.Minute); err != nil || !ok {
+			continue
+		}
+		m, err := backup.Backup(ctx, cfg)
+		if err != nil {
+			log.Error("backup failed", "error", err.Error())
+			continue
+		}
+		log.Info("backup written", "id", m.ID, "bytes", m.RawSize, "blocks", len(m.Blocks))
+	}
 }

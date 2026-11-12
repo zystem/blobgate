@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/zystem/blobgate/internal/maint"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/store"
 )
@@ -131,6 +134,27 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, 200, map[string]any{"ok": true, "name": name, "kind": kind})
+		return
+	case ":reconcile":
+		if r.Method != http.MethodPost {
+			problem(w, 405, "method_not_allowed", "POST")
+			return
+		}
+		minAge := 24 * time.Hour
+		if v := r.URL.Query().Get("min_age"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				problem(w, 400, "invalid_request", "min_age is a number of seconds")
+				return
+			}
+			minAge = time.Duration(n) * time.Second
+		}
+		rep, err := maint.New(maint.Config{Now: s.cfg.Now}, s.DB, s.Reg).Reconcile(ctx, name, r.URL.Query().Has("apply"), minAge)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, rep)
 		return
 	case ":default":
 		if r.Method != http.MethodPost {

@@ -114,6 +114,8 @@ func fail(w http.ResponseWriter, err error) {
 		problem(w, 409, "not_configured", "the module has no store yet")
 	case errors.Is(err, store.ErrNoSuchStore):
 		problem(w, 404, "no_such_store", "no such store")
+	case errors.Is(err, store.ErrNewerLayout):
+		problem(w, 500, "newer_layout", "the store was written by a newer version of this program: update it (docs/compat.md)")
 	case errors.Is(err, store.ErrUnreadable):
 		problem(w, 500, "unreadable", "the settings of the store could not be read (the seal key is not the one they were sealed with)")
 	default:

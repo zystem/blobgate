@@ -559,7 +559,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	impl := []string{
 		"GET /healthz", "GET /readyz", "GET /v1/openapi.yaml", "GET /v1/stores",
 		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
-		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default",
+		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default", "POST /v1/admin/stores/{name}:reconcile",
 	}
 	for _, o := range impl {
 		if !inSpec[o] {

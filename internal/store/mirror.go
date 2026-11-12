@@ -27,6 +27,11 @@ type Node struct {
 	mkMu  sync.Mutex    // directories are made one at a time on a node: two writers that make the same parent at the same moment make some servers answer "file exists" (SFTP) and fail
 }
 
+// NewNode makes a node of an opened Fs; it takes NodeWrites writes at the same time.
+func NewNode(spec NodeSpec, f fs.Fs) *Node {
+	return &Node{ID: spec.ID(), Spec: spec, F: f, slots: make(chan struct{}, NodeWrites)}
+}
+
 // makeDir makes the directory of a block before it is written, under the node's lock. A failure is not reported: the write says what really cannot be done.
 func (n *Node) makeDir(ctx context.Context, rel string) {
 	dir := path.Dir(rel)
