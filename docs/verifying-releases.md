@@ -43,4 +43,4 @@ The same source with the same Go version gives the same bytes: `CGO_ENABLED=0 go
 
 ## What was run
 
-The repeatable build and the checks of the workflows: run in CI. The commands above: not yet run against a release: 0.2.0 is the first with signatures (0.1.0 has the checksums only); the result is added here after 0.2.0 is checked.
+The repeatable build and the checks of the workflows: run in CI. The commands above, against the release 0.2.0 (the first with signatures; 0.1.0 has the checksums only), on 2026-11-13: `sha256sum -c checksums.txt` passed for both archives; `gh attestation verify` passed (exit 0) for the amd64 archive and for the image; the image started and printed `blobgate 0.2.0`. `cosign verify` and `cosign verify-blob` were **not run** (cosign is not installed on the machine that made the release).
