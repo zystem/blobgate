@@ -60,6 +60,8 @@ type Mirror struct {
 	Name    string
 	Nodes   []*Node
 	MinAcks int // already resolved: 1..len(Nodes)
+	// SoftDelete is how long a deleted object is kept in the trash; 0: removed at once
+	SoftDelete time.Duration
 	// Enc, if set, seals the blocks of this store (Enc.Current != 0) and opens the sealed ones that it has the key for
 	Enc *Cipher
 	// SpaceURL, if set, is where an S3 store says how much room it has (Garage's /metrics)

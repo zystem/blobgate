@@ -71,12 +71,32 @@ func (s *Server) coreObject(w http.ResponseWriter, r *http.Request) {
 	shard := tenantOf(r)
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/stores/")
 	slash := strings.IndexByte(rest, '/')
-	if slash < 1 || !strings.HasPrefix(rest[slash+1:], "objects/") {
+	if slash < 1 {
 		problem(w, 404, "not_found", "no such route")
 		return
 	}
-	st, key := rest[:slash], rest[slash+1+len("objects/"):]
-	s.object(w, r, shard, st, key)
+	st, tail := rest[:slash], rest[slash+1:]
+	switch {
+	case tail == "objects" || tail == "objects/": // the list of the tenant's objects
+		s.tenantCall(w, r, shard, st, func(m *store.Mirror) { s.list(w, r, m, shard) })
+	case tail == "usage":
+		s.tenantCall(w, r, shard, st, func(m *store.Mirror) { s.usage(w, r, m, shard) })
+	case strings.HasPrefix(tail, "objects/"):
+		s.object(w, r, shard, st, tail[len("objects/"):])
+	default:
+		problem(w, 404, "not_found", "no such route")
+	}
+}
+
+// tenantCall runs a GET that is about the tenant and not about one object, on the store.
+func (s *Server) tenantCall(w http.ResponseWriter, r *http.Request, shard, st string, f func(m *store.Mirror)) {
+	if r.Method != http.MethodGet {
+		problem(w, 405, "method_not_allowed", "GET")
+		return
+	}
+	if m := s.loadStore(w, r.Context(), st); m != nil {
+		f(m)
+	}
 }
 
 func (s *Server) object(w http.ResponseWriter, r *http.Request, shard, st, key string) {
@@ -100,12 +120,14 @@ func (s *Server) object(w http.ResponseWriter, r *http.Request, shard, st, key s
 		}
 	case http.MethodPost:
 		switch {
+		case has(r, "restore"):
+			s.restore(w, r, m, full)
 		case has(r, "uploads"):
 			s.beginUpload(w, r, m, full, q.Get("size"))
 		case has(r, "upload"):
 			s.complete(w, r, m, full, q.Get("upload"))
 		default:
-			problem(w, 400, "invalid_request", "POST takes ?uploads or ?upload={id}")
+			problem(w, 400, "invalid_request", "POST takes ?uploads, ?upload={id} or ?restore")
 		}
 	case http.MethodHead:
 		s.head(w, r, m, full)
@@ -242,6 +264,7 @@ type objectRow struct {
 	blocks     []string // SHA-256 of the blocks as stored
 	enc        uint32
 	written    int64 // when it was fixed, unix seconds
+	deleted    int64 // when it was put in the trash, unix seconds; 0: it is there
 	meta       objMeta
 }
 
@@ -320,12 +343,22 @@ func (o *objectRow) setHeaders(w http.ResponseWriter) {
 	}
 }
 
+// getRow is the object as a reader sees it: nil when there is none, or when it is in the trash.
 func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error) {
-	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc, written_at, content_type, meta FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	o, err := s.getRowAny(ctx, st, full)
+	if o != nil && o.deleted > 0 {
+		return nil, err
+	}
+	return o, err
+}
+
+// getRowAny is the row whatever its state (the writes and the cleaning see the trash too).
+func (s *Server) getRowAny(ctx context.Context, st, full string) (*objectRow, error) {
+	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc, written_at, content_type, meta, deleted_at FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: keyID(rq.Int(rows[0][4])), written: rq.Int(rows[0][5])}
+	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: keyID(rq.Int(rows[0][4])), written: rq.Int(rows[0][5]), deleted: rq.Int(rows[0][8])}
 	o.meta.ContentType = rq.Str(rows[0][6])
 	_ = json.Unmarshal([]byte(rq.Str(rows[0][7])), &o.meta.Pairs)
 	if err := json.Unmarshal([]byte(rq.Str(rows[0][3])), &o.blocks); err != nil {
@@ -350,7 +383,7 @@ func (s *Server) purgeTasks(m *store.Mirror, full, except string) []rq.Stmt {
 // commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
 // at once; what a node could not do stays in the queue.
 func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string, enc uint32, om objMeta) error {
-	old, err := s.getRow(ctx, m.Name, full)
+	old, err := s.getRowAny(ctx, m.Name, full)
 	if err != nil {
 		return err
 	}
@@ -362,9 +395,9 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 	s.at("commit:before")
 	stmts := s.purgeTasks(m, full, gen)
 	stmts = append(stmts,
-		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0) "+
 			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks, enc = excluded.enc, "+
-			"content_type = excluded.content_type, meta = excluded.meta",
+			"content_type = excluded.content_type, meta = excluded.meta, deleted_at = 0",
 			m.Name, full, size, s.now(), gen, blockSize, string(bj), enc, om.ContentType, string(pj)),
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
@@ -460,6 +493,10 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		e.write(w)
 		return
 	}
+	if e := s.checkQuota(ctx, m, full, need); e != nil {
+		e.write(w)
+		return
+	}
 	gen := newID()
 	pj, _ := json.Marshal(om.Pairs)
 	if om.Pairs == nil {
@@ -523,6 +560,13 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 			return
 		}
 	}
+	if size < 0 || size > BlockSize { // what the body came to is known only now: the limit is checked again before the object is fixed
+		if e := s.checkQuota(ctx, m, full, total); e != nil {
+			s.purge(ctx, m, full, gen)
+			fail2(e)
+			return
+		}
+	}
 	s.at("put:after-block")
 	blockSize := int64(BlockSize)
 	if size > 0 && size <= BlockSize {
@@ -558,6 +602,10 @@ func (s *Server) beginUpload(w http.ResponseWriter, r *http.Request, m *store.Mi
 	ctx := r.Context()
 	expected, _ := strconv.ParseInt(sizeArg, 10, 64)
 	if e := s.noRoom(ctx, m, max(expected, 0)); e != nil {
+		e.write(w)
+		return
+	}
+	if e := s.checkQuota(ctx, m, full, max(expected, 0)); e != nil {
 		e.write(w)
 		return
 	}
@@ -756,6 +804,10 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		blocks[i] = p.stored
 		total += p.size
 	}
+	if e := s.checkQuota(ctx, m, full, total); e != nil {
+		e.write(w)
+		return
+	}
 	s.at("complete:before-commit")
 	var om objMeta
 	if rows, err := s.DB.Query(ctx, rq.S("SELECT content_type, meta FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload)); err == nil && len(rows) == 1 {
@@ -784,28 +836,56 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request, m *store.Mirror, 
 	writeJSON(w, 200, map[string]any{"aborted": true})
 }
 
+// deleteObject removes an object. With a store that has a trash (soft_delete_seconds) it is hidden and kept for that long, and can be restored; `?purge` removes it at once, from the trash too.
 func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
 	ctx := r.Context()
 	if !s.precondition(ctx, w, r, m, full) {
 		return
 	}
-	old, err := s.getRow(ctx, m.Name, full)
+	old, err := s.getRowAny(ctx, m.Name, full)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	if old != nil {
-		// the removal of the blocks is written down in the transaction that removes the row, so that a process that dies between the two leaves nothing that nobody knows of
-		stmts := s.purgeTasks(m, full, "")
-		stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ?", m.Name, full))
-		if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
-			fail(w, err)
-			return
-		}
-		s.at("delete:after-tx")
-		s.purgeNow(ctx, m, full, old.generation)
+	if old == nil {
+		writeJSON(w, 200, map[string]any{"deleted": true})
+		return
 	}
+	if m.SoftDelete > 0 && !has(r, "purge") {
+		if old.deleted == 0 {
+			if _, err := s.DB.Exec(ctx, false, rq.S("UPDATE storage_objects SET deleted_at = ? WHERE store = ? AND key = ? AND deleted_at = 0 AND generation = ?", s.now(), m.Name, full, old.generation)); err != nil {
+				fail(w, err)
+				return
+			}
+			s.at("delete:after-trash")
+		}
+		writeJSON(w, 200, map[string]any{"deleted": true, "trash": true, "restorable_until": s.now() + int64(m.SoftDelete/time.Second)})
+		return
+	}
+	// the removal of the blocks is written down in the transaction that removes the row, so that a process that dies between the two leaves nothing that nobody knows of
+	stmts := s.purgeTasks(m, full, "")
+	stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ?", m.Name, full))
+	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
+		fail(w, err)
+		return
+	}
+	s.at("delete:after-tx")
+	s.purgeNow(ctx, m, full, old.generation)
 	writeJSON(w, 200, map[string]any{"deleted": true})
+}
+
+// restore takes an object out of the trash.
+func (s *Server) restore(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
+	n, err := s.DB.Exec(r.Context(), false, rq.S("UPDATE storage_objects SET deleted_at = 0 WHERE store = ? AND key = ? AND deleted_at > 0", m.Name, full))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if len(n) != 1 || n[0] == 0 {
+		problem(w, 404, "no_such_object", "there is no such object in the trash")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"restored": true})
 }
 
 func (s *Server) stat(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {

@@ -23,7 +23,6 @@ What the project intends to do and not do in the next year. It is a plan of two 
 
 ## Does not intend to do
 
-- To be a general S3 server or to list the contents of a store: the inventory is the database.
+- To be a general S3 server (the listing of a tenant's keys is built, 0.4.0; the S3 wire protocol is not).
 - Repository formats (Maven, npm, OCI): a separate service on top of this one, if ever.
-- Quotas per organisation (the core decides who may write what; the module keeps room per store).
 - A web interface.

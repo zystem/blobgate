@@ -22,16 +22,17 @@ type nodeBody struct {
 }
 
 type storeBody struct {
-	Kind     string     `json:"kind"`
-	Endpoint string     `json:"endpoint"`
-	Region   string     `json:"region"`
-	Bucket   string     `json:"bucket"`
-	KeyID    string     `json:"access_key_id"`
-	Secret   string     `json:"secret_access_key"`
-	SpaceURL string     `json:"space_url"`
-	Nodes    []nodeBody `json:"nodes"`
-	MinAcks  int        `json:"min_acks"`
-	Default  bool       `json:"default"`
+	Kind              string     `json:"kind"`
+	Endpoint          string     `json:"endpoint"`
+	Region            string     `json:"region"`
+	Bucket            string     `json:"bucket"`
+	KeyID             string     `json:"access_key_id"`
+	Secret            string     `json:"secret_access_key"`
+	SpaceURL          string     `json:"space_url"`
+	Nodes             []nodeBody `json:"nodes"`
+	MinAcks           int        `json:"min_acks"`
+	Default           bool       `json:"default"`
+	SoftDeleteSeconds int        `json:"soft_delete_seconds"`
 	// Encryption seals the blocks written from now on; keys keeps every key an object was ever sealed with (id -> text), key_id is the one new blocks use
 	Encryption *struct {
 		KeyID uint32            `json:"key_id"`
@@ -40,7 +41,7 @@ type storeBody struct {
 }
 
 func (b storeBody) parse() (store.Config, store.Secrets, error) {
-	cfg := store.Config{Kind: b.Kind, MinAcks: b.MinAcks, SpaceURL: b.SpaceURL}
+	cfg := store.Config{Kind: b.Kind, MinAcks: b.MinAcks, SpaceURL: b.SpaceURL, SoftDeleteSeconds: b.SoftDeleteSeconds}
 	var sec store.Secrets
 	if cfg.Kind == "" {
 		cfg.Kind = "s3"
@@ -117,12 +118,19 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 				enc = map[string]any{"key_id": e.Cfg.Encrypt.KeyID}
 			}
 			items = append(items, map[string]any{"encryption": enc, "name": e.Name, "kind": e.Cfg.Kind, "default": e.Default, "endpoint": e.Cfg.Endpoint, "region": e.Cfg.Region,
-				"bucket": e.Cfg.Bucket, "access_key_id": e.Cfg.KeyID, "nodes": nodes, "min_acks": acks, "objects": n, "space_url": e.Cfg.SpaceURL, "repair_pending": pend})
+				"bucket": e.Cfg.Bucket, "access_key_id": e.Cfg.KeyID, "nodes": nodes, "min_acks": acks, "soft_delete_seconds": e.Cfg.SoftDeleteSeconds, "objects": n, "space_url": e.Cfg.SpaceURL, "repair_pending": pend})
 		}
 		writeJSON(w, 200, map[string]any{"stores": items})
 		return
 	}
 	switch action {
+	case ":usage":
+		if r.Method != http.MethodGet {
+			problem(w, 405, "method_not_allowed", "GET")
+			return
+		}
+		s.adminUsage(w, r, name)
+		return
 	case ":check":
 		if r.Method != http.MethodPost {
 			problem(w, 405, "method_not_allowed", "POST")

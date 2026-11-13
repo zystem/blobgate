@@ -266,7 +266,7 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 // Open makes the Mirror of settings (the admin call tries them before it keeps them).
 func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, error) {
 	specs := cfg.Specs(sec)
-	m := &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL}
+	m := &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL, SoftDelete: time.Duration(cfg.SoftDeleteSeconds) * time.Second}
 	if cfg.Encrypt != nil || len(sec.EncKeys) > 0 {
 		var cur uint32
 		if cfg.Encrypt != nil {

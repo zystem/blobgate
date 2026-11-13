@@ -138,6 +138,7 @@ func (w *Worker) Pass(ctx context.Context) {
 	done, failed := w.RepairPass(ctx)
 	swept := w.SweepPass(ctx)
 	metrics.Swept(swept)
+	swept += w.TrashPass(ctx)
 	if done+failed+swept > 0 {
 		w.cfg.Log.Info("maintenance", "repaired", done, "failed", failed, "swept_uploads", swept)
 	}
@@ -358,4 +359,59 @@ func (w *Worker) CheckPass(ctx context.Context) int {
 		}
 	}
 	return made
+}
+
+// TrashPass removes the objects whose time in the trash is over: for every node the removal of the blocks is written down in the transaction that deletes the row (the same rule as a delete that is not
+// soft), then tried at once. It returns how many objects it removed. A row that was restored or replaced meanwhile is not touched (the statements name its generation and its state).
+func (w *Worker) TrashPass(ctx context.Context) int {
+	list, err := w.Reg.List(ctx)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, e := range list {
+		if e.Cfg.SoftDeleteSeconds <= 0 {
+			continue
+		}
+		m, err := w.Reg.Load(ctx, e.Name)
+		if err != nil {
+			continue
+		}
+		rows, err := w.DB.Query(ctx, rq.S("SELECT key, generation FROM storage_objects WHERE store = ? AND deleted_at > 0 AND deleted_at <= ? LIMIT 100", e.Name, w.now()-int64(e.Cfg.SoftDeleteSeconds)))
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			if ctx.Err() != nil || !w.stillMine(ctx) {
+				return removed
+			}
+			key, gen := rq.Str(r[0]), rq.Str(r[1])
+			var stmts []rq.Stmt
+			if gen != "" {
+				for _, n := range m.Nodes {
+					stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
+						"SELECT store, key || '~' || generation, ?, 'purge', ?, 0, 0, '' FROM storage_objects WHERE store = ? AND key = ? AND generation = ? AND deleted_at > 0 "+
+						"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, key, gen))
+				}
+			}
+			stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ? AND generation = ? AND deleted_at > 0", e.Name, key, gen))
+			if _, err := w.DB.Exec(ctx, true, stmts...); err != nil {
+				continue
+			}
+			removed++
+			if gen == "" {
+				continue
+			}
+			failed := map[string]bool{}
+			for _, n := range m.DeleteDir(ctx, layout.BlockDir(key, gen)) {
+				failed[n.ID] = true
+			}
+			for _, n := range m.Nodes {
+				if !failed[n.ID] {
+					_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", e.Name, layout.DirKey(key, gen), n.ID))
+				}
+			}
+		}
+	}
+	return removed
 }

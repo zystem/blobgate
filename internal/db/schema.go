@@ -28,6 +28,9 @@ var ddl = []string{
 	// an upload that has begun and not been completed or aborted: what the sweep of orphan blocks looks at
 	`CREATE TABLE IF NOT EXISTS storage_uploads (
        store TEXT NOT NULL, key TEXT NOT NULL, upload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (store, key, upload))`,
+	// the limits of a tenant in a store (0: no limit); what a tenant holds is counted from storage_objects
+	`CREATE TABLE IF NOT EXISTS storage_quotas (
+       store TEXT NOT NULL, tenant TEXT NOT NULL, max_bytes INTEGER NOT NULL DEFAULT 0, max_objects INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (store, tenant))`,
 	// a job that only one replica of the module does at a time
 	`CREATE TABLE IF NOT EXISTS storage_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, until INTEGER NOT NULL)`,
 }
@@ -40,6 +43,7 @@ var columns = [][3]string{
 	{"storage_objects", "enc", "INTEGER NOT NULL DEFAULT 0"},        // the id of the key the blocks are sealed with; 0: not sealed
 	{"storage_objects", "content_type", "TEXT NOT NULL DEFAULT ''"}, // as the writer named it
 	{"storage_objects", "meta", "TEXT NOT NULL DEFAULT '{}'"},       // the metadata the writer gave (a JSON object of text)
+	{"storage_objects", "deleted_at", "INTEGER NOT NULL DEFAULT 0"}, // when it was put in the trash (soft delete); 0: it is there
 	{"storage_uploads", "content_type", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_uploads", "meta", "TEXT NOT NULL DEFAULT '{}'"},
 	{"storage_parts", "stored_sha256", "TEXT NOT NULL DEFAULT ''"}, // of the block as stored (sealed); sha256 stays that of what the shim sent, which the core compares

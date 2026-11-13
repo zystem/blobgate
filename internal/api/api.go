@@ -44,7 +44,7 @@ type Config struct {
 	UploadTTL    time.Duration // an upload older than this is swept (0: 24 h)
 	Now          func() time.Time
 	// CrashAt, if set, is called at the named points of a write or a delete (`put:after-uploads-row`, `put:after-block`, `part:after-block`, `complete:before-commit`, `commit:before`,
-	// `commit:after-tx`, `delete:after-tx`, `abort:after-purge`). The tests make it end the request there, as a process that dies would; nothing sets it in the program.
+	// `commit:after-tx`, `delete:after-tx`, `delete:after-trash`, `abort:after-purge`). The tests make it end the request there, as a process that dies would; nothing sets it in the program.
 	CrashAt func(point string)
 }
 
@@ -246,6 +246,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("/v1/stores", s.listStores)
 	mux.HandleFunc("/v1/stores/", s.coreObject)
+	mux.HandleFunc("/v1/admin/quotas", s.adminQuotas)
+	mux.HandleFunc("/v1/admin/quotas/", s.adminQuotas)
 	mux.HandleFunc("/v1/admin/stores", s.admin)
 	mux.HandleFunc("/v1/admin/stores/", s.admin)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found", "no such route") })

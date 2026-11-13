@@ -51,7 +51,7 @@ func newRig(t *testing.T, mut func(*Config)) *rig {
 	}
 	c := rq.New(url)
 	ctx := context.Background()
-	for _, tb := range []string{"storage_stores", "storage_objects", "storage_repair", "storage_parts", "storage_uploads", "storage_lease"} {
+	for _, tb := range []string{"storage_stores", "storage_objects", "storage_repair", "storage_parts", "storage_uploads", "storage_lease", "storage_quotas"} {
 		if _, err := c.Exec(ctx, false, rq.S("DROP TABLE IF EXISTS "+tb)); err != nil {
 			t.Fatal(err)
 		}
@@ -555,7 +555,8 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	}
 	// what the server does answer, as (method, template of the path): the concrete requests below are made from the templates
 	impl := []string{
-		"GET /healthz", "GET /readyz", "GET /metrics", "GET /v1/openapi.yaml", "GET /v1/stores",
+		"GET /healthz", "GET /readyz", "GET /metrics", "GET /v1/openapi.yaml", "GET /v1/stores", "GET /v1/stores/{store}/objects", "GET /v1/stores/{store}/usage",
+		"GET /v1/admin/quotas", "PUT /v1/admin/quotas/{store}/{tenant}", "DELETE /v1/admin/quotas/{store}/{tenant}", "GET /v1/admin/stores/{name}:usage",
 		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "HEAD /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
 		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default", "POST /v1/admin/stores/{name}:reconcile",
 	}
@@ -573,7 +574,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	r.mirror(0)
 	for _, o := range impl {
 		m, p, _ := strings.Cut(o, " ")
-		p = strings.NewReplacer("{store}", "main", "{key}", "k/x", "{name}", "main").Replace(p)
+		p = strings.NewReplacer("{store}", "main", "{key}", "k/x", "{name}", "main", "{tenant}", "001").Replace(p)
 		var code int
 		var data []byte
 		switch {

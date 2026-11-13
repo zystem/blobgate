@@ -77,5 +77,11 @@ A store is `{"kind": "mirror", "nodes": [{"remote": ":ftp,host=h,user=u:/path", 
 
 * `min_acks`: nodes that must confirm a write; `0` (the default) is every node. A node that missed it gets the block from the repair pass.
 * `secrets` of a node: options of the rclone backend that are passwords or keys; they are sealed in the database and never shown.
+* `soft_delete_seconds`: `0` (the default) deletes at once. Above `0` (at most one year) a deleted object goes to the trash: it is hidden from reads and from the list, its blocks stay, and `POST .../objects/<key>?restore`
+  brings it back as it was; a new write of the key replaces it; `DELETE ...?purge` removes it at once; the worker removes it when the time is over. A change is read by the replicas within two seconds.
+* Quotas: `PUT /v1/admin/quotas/<store>/<tenant>` with `{"max_bytes": n, "max_objects": n}` (`0`, the default, is no limit; applied at once, by every replica). A write that would pass the limit is
+  refused with 507 `quota_exceeded` before anything is written (a body of unknown length: when it has come, and nothing is left); a replacement counts once; the trash does not count; what is held when the limit is set is not touched.
+  `GET /v1/stores/<store>/usage` (the tenant) and `GET /v1/admin/stores/<name>:usage` (the operator) say what is held.
+* Listing: `GET /v1/stores/<store>/objects?prefix=&limit=&after=&delimiter=&trash=` (the keys of the tenant only; see the API description).
 * `space_url` (s3): where the store says how much room it has (Garage: `http://host:3903/metrics`). A store that does not say is not asked, and a full one is found when a write fails (507 with words).
 * The WebDAV backend of rclone is given `pacer_min_sleep=100us` unless the store sets it.

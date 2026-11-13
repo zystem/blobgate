@@ -214,3 +214,7 @@ func TestLimitsPreconditionsAndMetadata(t *testing.T) {
 		t.Fatalf("the metadata of the upload is lost: %v", hh)
 	}
 }
+
+func signV2(secret, tenant, method, target string) string {
+	return auth.SignTarget(secret, tenant, method, target, time.Now().Unix())
+}

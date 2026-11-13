@@ -78,7 +78,7 @@ components:
           description: |
             unauthorized, no_such_object, no_such_store, not_configured, invalid_key, invalid_request, invalid_part, invalid_range, range_required, sha256_required, sha256_mismatch,
             empty_body, too_large, store_full, storage_unreachable, store_in_use, unavailable, database_unavailable, method_not_allowed, not_found, unreadable, newer_layout,
-            invalid_sha256, invalid_metadata, precondition_failed, range_not_satisfiable, no_such_upload, encrypted_no_key, decrypt_failed, encryption_failed, store_error
+            invalid_sha256, invalid_metadata, quota_exceeded, precondition_failed, range_not_satisfiable, no_such_upload, encrypted_no_key, decrypt_failed, encryption_failed, store_error
         detail: {type: string}
     Size:
       type: object
@@ -105,6 +105,7 @@ components:
         objects: {type: integer}
         space_url: {type: string}
         repair_pending: {type: integer, description: only for a mirror}
+        soft_delete_seconds: {type: integer}
     StoreSettings:
       type: object
       description: the secret is sealed at rest and never returned
@@ -129,6 +130,7 @@ components:
           properties:
             key_id: {type: integer, minimum: 1}
             keys: {type: object, additionalProperties: {type: string}}
+        soft_delete_seconds: {type: integer, minimum: 0, maximum: 31536000, description: "0 (the default) deletes at once; above 0 a deleted object stays in the trash for that long and can be restored (docs/data-lifecycle.md)"}
         default: {type: boolean}
   responses:
     Problem:
@@ -142,7 +144,7 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
     StoreFull:
-      description: 507 store_full, nothing was written; the detail says in words what is wrong and what to do. Two causes - the module knew beforehand that the block would not fit (the node says how much room it has, and less than the reserve would be left), or a node that cannot say reported at the write that it is out of space (disk full, FTP 552, WebDAV 507, a quota) and too few nodes took the block
+      description: 507 quota_exceeded (the tenant's limit of bytes or objects in the store; the detail says which and what it holds) or 507 store_full, nothing was written; the detail says in words what is wrong and what to do. Two causes - the module knew beforehand that the block would not fit (the node says how much room it has, and less than the reserve would be left), or a node that cannot say reported at the write that it is out of space (disk full, FTP 552, WebDAV 507, a quota) and too few nodes took the block
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
@@ -182,6 +184,36 @@ paths:
                 properties:
                   stores: {type: array, items: {$ref: "#/components/schemas/StoreSummary"}}
                   default: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /v1/stores/{store}/objects:
+    get:
+      summary: |
+        list the objects of the tenant in key order. `prefix` limits the keys, `limit` (1..1000, default 100) the page, `after` is the `next` of the previous page, `delimiter` (one character, usually `/`) folds the keys
+        below a prefix into `prefixes`, `trash=1` lists the objects in the trash instead (with `deleted_at` and `purge_at`). The list is of the tenant that signed the call; the keys of another are never shown.
+      security: [{coreToken: []}]
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/store"}
+        - {name: prefix, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000}}
+        - {name: after, in: query, schema: {type: string}}
+        - {name: delimiter, in: query, schema: {type: string, minLength: 1, maxLength: 1}}
+        - {name: trash, in: query, allowEmptyValue: true, schema: {type: string}}
+      responses:
+        "200":
+          description: "{objects: [{key, size, etag, content_type, modified, deleted_at, purge_at}], prefixes: [], next}; `next` is set when there is more"
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /v1/stores/{store}/usage:
+    get:
+      summary: "what the tenant holds in the store: {objects, bytes, trash_objects, trash_bytes, quota: {max_bytes, max_objects}} (0 is no limit); the trash does not count against the quota"
+      security: [{coreToken: []}]
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/store"}
+      responses:
+        "200": {description: ok}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /v1/stores/{store}/objects/{key}:
     parameters:
@@ -250,11 +282,12 @@ paths:
         "416": {description: range_not_satisfiable, with `Content-Range: bytes */<size>`}
         "503": {$ref: "#/components/responses/Unavailable"}
     post:
-      summary: "`?uploads[&size=<bytes>]` begins a multipart upload; `?upload=<id>` completes it"
+      summary: "`?uploads[&size=<bytes>]` begins a multipart upload; `?upload=<id>` completes it; `?restore` brings an object back from the trash"
       security: [{coreToken: []}]
       parameters:
         - {name: uploads, in: query, allowEmptyValue: true, schema: {type: string}}
         - {name: size, in: query, schema: {type: integer, format: int64}, description: the size of the whole object when known, counted by the room check}
+        - {name: restore, in: query, allowEmptyValue: true, schema: {type: string}}
         - {$ref: "#/components/parameters/upload"}
       requestBody:
         description: "complete only: {\"parts\": [[1, \"etag\"], ...]}, at most 10000 parts, at most 1 MiB"
@@ -265,11 +298,16 @@ paths:
         "400": {$ref: "#/components/responses/Problem"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "503": {$ref: "#/components/responses/Unavailable"}
+        "404": {description: "restore: the object is not in the trash"}
         "507": {$ref: "#/components/responses/StoreFull"}
     delete:
-      summary: 'delete the object (one that is not there is fine: {deleted: true}), or abort an upload with `?upload=<id>` ({aborted: true})'
+      summary: |
+        delete the object (one that is not there is fine: {deleted: true}), or abort an upload with `?upload=<id>` ({aborted: true}). When the store has `soft_delete_seconds` the object goes to the trash
+        ({deleted: true, trash: true, restorable_until}) and its blocks are kept until the time is over; `?purge` removes it at once, also from the trash.
       security: [{coreToken: []}]
-      parameters: [{$ref: "#/components/parameters/upload"}]
+      parameters:
+        - {$ref: "#/components/parameters/upload"}
+        - {name: purge, in: query, allowEmptyValue: true, schema: {type: string}}
       responses:
         "200": {description: done}
         "401": {$ref: "#/components/responses/Unauthorized"}
@@ -336,6 +374,39 @@ paths:
         - {name: min_age, in: query, schema: {type: integer, minimum: 0}}
       responses:
         "200": {description: "{store, nodes, files, expected, strays: [{node, dir, files, bytes, newest, recent}], unknown_files, queued}"}
+        "404": {description: no_such_store}
+  /v1/admin/quotas:
+    get:
+      summary: "the limits that are set: {quotas: [{store, tenant, max_bytes, max_objects}]}"
+      security: [{adminToken: []}]
+      responses:
+        "200": {description: ok}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /v1/admin/quotas/{store}/{tenant}:
+    parameters:
+      - {name: store, in: path, required: true, schema: {type: string}}
+      - {name: tenant, in: path, required: true, schema: {type: string}}
+    put:
+      summary: "set the limit; 0 is no limit for that part. A write that would pass it gets 507 quota_exceeded; what is held already is not touched"
+      security: [{adminToken: []}]
+      requestBody:
+        content: {application/json: {schema: {type: object, properties: {max_bytes: {type: integer, format: int64}, max_objects: {type: integer, format: int64}}}}}
+      responses:
+        "200": {description: ok}
+        "400": {$ref: "#/components/responses/Problem"}
+        "404": {description: no_such_store}
+    delete:
+      summary: take the limit away
+      security: [{adminToken: []}]
+      responses:
+        "200": {description: "{deleted: true}"}
+  /v1/admin/stores/{name}:usage:
+    get:
+      summary: "what every tenant holds in the store: {store, tenants: [{tenant, objects, bytes, trash_objects, trash_bytes, max_bytes, max_objects}]}"
+      security: [{adminToken: []}]
+      parameters: [{name: name, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: ok}
         "404": {description: no_such_store}
   /metrics:
     get:

@@ -3,6 +3,17 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
+## [0.4.0] - 2026-11-13
+
+### Added
+* Listing: `GET /v1/stores/{store}/objects` with `prefix`, `limit`, `after` (cursor), `delimiter` (folders) and `trash`; a tenant sees only its own keys.
+* Usage and quotas per tenant and store: `GET /v1/stores/{store}/usage`, `GET /v1/admin/stores/{name}:usage`, `GET|PUT|DELETE /v1/admin/quotas[/{store}/{tenant}]`; a write over the limit is 507 `quota_exceeded`.
+* Soft delete: the store setting `soft_delete_seconds`; a deleted object is kept in the trash, `POST ...?restore`, `DELETE ...?purge`, and the worker empties the trash. Crash point `delete:after-trash`.
+
+### Changed
+* With `soft_delete_seconds` above 0 a `DELETE` answers `{deleted, trash, restorable_until}`. Stores that do not set it behave as before.
+* The schema gains `storage_quotas` and the column `deleted_at`, added by the program at start (nothing to do by hand; a downgrade is not supported: docs/upgrading.md).
+
 ## [0.3.0] - 2026-11-13
 
 The program is no longer only the storage of one product: it is named and spoken to as a general blob storage service for many tenants, and it speaks plain HTTP. **Nothing that worked stops working**: the old

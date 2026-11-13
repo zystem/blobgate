@@ -5,8 +5,9 @@ minor release; anything older gets none. A new patch release (0.2.1 after 0.2.0)
 
 | Release | Date | Status |
 |---|---|---|
-| **0.3.0** | 2026-11-13 | supported: the latest |
-| 0.2.0 | 2026-11-13 | previous minor: High and Critical fixes only, **until 2026-12-13** |
+| **0.4.0** | 2026-11-13 | supported: the latest |
+| 0.3.0 | 2026-11-13 | previous minor: High and Critical fixes only, **until 2026-12-13** |
+| 0.2.0 | 2026-11-13 | not supported: update |
 | 0.1.0 | 2026-11-13 | not supported: built with Go 1.26.0, which has GO-2026-6859 (net/http): update |
 
 How to read it: while the project is 0.x a minor release may change a setting or a format; [upgrading.md](upgrading.md) lists what each one changed. What is stored (the rows in rqlite, the layout of blocks on the nodes,
