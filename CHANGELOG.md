@@ -3,7 +3,7 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-13
 
 ### Added
 * Secrets as files (`CINIM_STORAGE_*_FILE`), TLS on every port (`CINIM_STORAGE_TLS_CERT_FILE`, `CINIM_STORAGE_TLS_KEY_FILE`, TLS 1.2 or later, certificates read again when they change).
@@ -11,8 +11,12 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 * Security documents (policy, threat model, assurance case, requirements), governance, contributing, roadmap, supported versions; CI gates (coverage of 80%, `staticcheck`, `gosec`, `govulncheck`, a repeatable build,
   DCO, dependency review, Scorecard, Trivy, fuzzing).
 
+### Security
+* Built with Go 1.26.11: 0.1.0 was built with Go 1.26.0, whose `net/http` has the vulnerability GO-2026-6859 (fixed in Go 1.26.11, found by `govulncheck`). Update from 0.1.0.
+
 ### Fixed
 * The ids of backups made in one second now sort in the order they were made.
+* The integer conversions that `gosec` flags (the id of a sealing key, the class of a status) are done with checks.
 
 ## [0.1.0] - 2026-11-13
 
@@ -34,4 +38,5 @@ The first release: the storage module of CiNim, rewritten in Go on rclone.
 See `docs/status.md`: a read holds a block in memory (75 MB peak measured against 47 MB of the Nim module), nodes were tested with SFTPGo, Garage and local directories, the case of names on a server that folds
 case is not handled, the chart makes no bundled Garage or node.
 
+[0.2.0]: https://github.com/zystem/blobgate/releases/tag/v0.2.0
 [0.1.0]: https://github.com/zystem/blobgate/releases/tag/v0.1.0

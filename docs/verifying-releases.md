@@ -43,5 +43,4 @@ The same source with the same Go version gives the same bytes: `CGO_ENABLED=0 go
 
 ## What was run
 
-The repeatable build and the checks of the workflows: run in CI. The commands above: run against the release X.Y.Z that follows the one with the signatures (the first release, 0.1.0, was made before the signatures were
-added and has the checksums only).
+The repeatable build and the checks of the workflows: run in CI. The commands above: not yet run against a release: 0.2.0 is the first with signatures (0.1.0 has the checksums only); the result is added here after 0.2.0 is checked.

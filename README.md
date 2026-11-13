@@ -1,6 +1,6 @@
 # blobgate
 
-[![CI](https://github.com/zystem/blobgate/actions/workflows/ci.yml/badge.svg)](https://github.com/zystem/blobgate/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/zystem/blobgate/badge)](https://scorecard.dev/viewer/?uri=github.com/zystem/blobgate)
+[![CI](https://github.com/zystem/blobgate/actions/workflows/ci.yml/badge.svg)](https://github.com/zystem/blobgate/actions/workflows/ci.yml) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16650/badge)](https://www.bestpractices.dev/projects/16650) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/zystem/blobgate/badge)](https://scorecard.dev/viewer/?uri=github.com/zystem/blobgate)
 
 A storage service that keeps your blocks of data on any number of servers that [rclone](https://rclone.org) can talk to (FTP, WebDAV, SFTP, S3, a local disk, and more), checks every block against its SHA-256 when it reads it, and keeps the servers alike. It is the storage module of [CiNim](https://github.com/zystem/CiNim).
 
