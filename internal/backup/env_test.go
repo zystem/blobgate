@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -47,7 +48,7 @@ func TestFromEnv(t *testing.T) {
 }
 
 func TestMirrorRefusals(t *testing.T) {
-	if _, err := (Config{}).mirror(nil); err == nil || !strings.Contains(err.Error(), "CINIM_STORAGE_BACKUP_NODES") {
+	if _, err := (Config{}).mirror(context.Background()); err == nil || !strings.Contains(err.Error(), "CINIM_STORAGE_BACKUP_NODES") {
 		t.Fatalf("no nodes: %v", err)
 	}
 }

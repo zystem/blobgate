@@ -122,11 +122,7 @@ func (s *sftpgo) docker(args ...string) {
 // the data of the user, as the server holds it (a list of files)
 func (s *sftpgo) files() []string {
 	out, _ := exec.Command("docker", "exec", s.name, "find", "/srv/sftpgo/data/u1/blobs", "-type", "f").Output()
-	var f []string
-	for _, l := range strings.Fields(string(out)) {
-		f = append(f, l)
-	}
-	return f
+	return strings.Fields(string(out))
 }
 
 // DAT-004, STO-006: a mirror of a WebDAV node and an FTP node, which no Caddy of ours is part of: an object written to both, read back by ranges, replaced, deleted; the nodes hold only blocks of

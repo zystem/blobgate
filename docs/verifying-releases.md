@@ -38,7 +38,7 @@ GitHub accounts: `https://github.com/<login>.keys` for the keys, and the signing
 
 ## The build is repeatable
 
-The same source with the same Go version gives the same bytes: `CGO_ENABLED=0 go build -trimpath -buildmode=pie -ldflags="-s -w -X main.version=X.Y.Z" ./cmd/blobgate` twice gives one SHA-256, and CI checks it on every change
+The same source with the same Go version gives the same bytes: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=X.Y.Z" ./cmd/blobgate` twice gives one SHA-256, and CI checks it on every change
 (`reproducible` in `ci.yml`). Build it yourself with the Go version in `go.mod` and compare with the binary in the release.
 
 ## What was run

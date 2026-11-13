@@ -79,7 +79,7 @@ jobs:
           set -euo pipefail
           mkdir dist
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildmode=pie -ldflags="-s -w -X main.version=$VER" -o dist/blobgate ./cmd/blobgate
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w -X main.version=$VER" -o dist/blobgate ./cmd/blobgate
             tar -C dist -czf "dist/blobgate_${VER}_linux_${arch}.tar.gz" blobgate
             rm dist/blobgate
           done

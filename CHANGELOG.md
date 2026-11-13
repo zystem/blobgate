@@ -7,7 +7,7 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ### Added
 * Secrets as files (`CINIM_STORAGE_*_FILE`), TLS on every port (`CINIM_STORAGE_TLS_CERT_FILE`, `CINIM_STORAGE_TLS_KEY_FILE`, TLS 1.2 or later, certificates read again when they change).
-* Signed releases: the files, the image and the chart are signed keyless and have build provenance; the program is built as a position-independent executable and repeatably; a bill of materials is attached.
+* Signed releases: the files, the image and the chart are signed keyless and have build provenance; the program is built statically and repeatably (the same bytes from the same source); a bill of materials is attached.
 * Security documents (policy, threat model, assurance case, requirements), governance, contributing, roadmap, supported versions; CI gates (coverage of 80%, `staticcheck`, `gosec`, `govulncheck`, a repeatable build,
   DCO, dependency review, Scorecard, Trivy, fuzzing).
 

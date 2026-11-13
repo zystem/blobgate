@@ -152,7 +152,7 @@ func IsDB(err error) bool {
 	return errors.As(err, &e)
 }
 
-// Str, Int and Bool read a cell; a missing or null cell is the zero value.
+// Str reads a text cell; a missing or null cell is "".
 func Str(v any) string {
 	s, _ := v.(string)
 	return s

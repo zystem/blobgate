@@ -1,6 +1,6 @@
 module github.com/zystem/blobgate
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/rclone/rclone v1.76.0

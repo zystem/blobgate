@@ -23,11 +23,11 @@ type NodeSpec struct {
 	Path    string            `json:"path,omitempty"`
 }
 
-// Config is what is kept of a store, without its secrets.
 // CurrentLayout is the version of how blocks lie on the nodes (the path of a block, the escaping of a key). A store records the one it was written with, and a program refuses a store with a
 // newer one: reading it with an older rule would take the blocks for strays.
 const CurrentLayout = 1
 
+// Config is what is kept of a store, without its secrets.
 type Config struct {
 	Layout   int        `json:"layout,omitempty"` // 0 is 1: the stores written before the field was added
 	Kind     string     `json:"kind"`             // "mirror" (rclone nodes) or "s3" (one S3 bucket: a short way to write one node)
