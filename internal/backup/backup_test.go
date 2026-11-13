@@ -255,7 +255,7 @@ func TestKey(t *testing.T) {
 	}
 	none := r.cfg
 	none.Key = ""
-	if _, err := Backup(context.Background(), none); err == nil || !strings.Contains(err.Error(), "CINIM_STORAGE_BACKUP_KEY") {
+	if _, err := Backup(context.Background(), none); err == nil || !strings.Contains(err.Error(), "BLOBGATE_BACKUP_KEY") {
 		t.Fatalf("no key: %v", err)
 	}
 	// a plain backup is read plain

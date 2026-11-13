@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"github.com/zystem/blobgate/internal/space"
 	"strings"
 	"syscall"
 )
@@ -17,7 +18,7 @@ type ErrNoSpace struct {
 
 func (e *ErrNoSpace) Error() string {
 	return fmt.Sprintf("the store %s could not take the block: %s reports that it is out of space (%s); this kind of node cannot say beforehand how much room it has, so the upload was refused only when it "+
-		"did not fit; delete caches or artifacts, shorten their retention (cache.retention, artifacts.retention), or give the node a bigger volume", e.Store, strings.Join(e.Nodes, ", "), e.Detail)
+		"did not fit; %s", e.Store, strings.Join(e.Nodes, ", "), e.Detail, space.Hint)
 }
 
 // noSpaceWords are what servers say when they have no room: the text of ENOSPC and EDQUOT, FTP 552 and 452, WebDAV 507 Insufficient Storage, the quota messages of SFTP servers and of S3 stores.

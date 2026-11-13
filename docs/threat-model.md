@@ -4,20 +4,20 @@ What is protected, from whom, and how. The claims are argued in [assurance-case.
 
 ## Assets
 
-The data blocks (artifacts and caches of builds); the secrets of the stores (passwords and keys of the nodes); the secrets of the shards, the admin token, the seal key, the key of the backups; the records in rqlite (they
-say what exists); the backups of the database (they hold everything of the shard).
+The data blocks (artifacts and caches of builds); the secrets of the stores (passwords and keys of the nodes); the secrets of the tenants, the admin token, the seal key, the key of the backups; the records in rqlite (they
+say what exists); the backups of the database (they hold everything of the tenant).
 
 ## Who and where
 
 | Actor | Trust | Reaches |
 |---|---|---|
-| the CiNim core | trusted with its shard | the main port, with a token for each call |
+| the CiNim core | trusted with its tenant | the main port, with a token for each call |
 | a step's shim | semi-trusted: it runs code of a build | the shim port, with a grant for one upload or one object |
 | the operator | trusted | the admin API, the environment, the nodes' passwords |
 | a node of a store | not trusted for integrity or, with sealing, for confidentiality | what the module sends it |
 | rqlite | trusted for the records; holds no secret in the clear | the records |
 | a network attacker | not trusted | the ports, and the paths between the module and the others |
-| a user of another shard | not trusted | the same module, with their own secret |
+| a user of another tenant | not trusted | the same module, with their own secret |
 
 Trust boundaries: network to port; the shim port to the module (a grant, nothing else is served); the module to the nodes; the module to rqlite; the admin API to the rest.
 
@@ -25,8 +25,8 @@ Trust boundaries: network to port; the shim port to the module (a grant, nothing
 
 | Threat | Answer | Evidence |
 |---|---|---|
-| a call made without a token, with another's, or changed in flight | HMAC over shard, method, target and time; refused with 401 | `internal/auth`, `TestAuthAndShards`, fuzz test |
-| a shim writes or reads what it should not | a grant is for one shard, store, key, upload and mode; the port serves only a part PUT and a range GET | `TestRefusalsOfTheShimPort` |
+| a call made without a token, with another's, or changed in flight | HMAC over tenant, method, target and time; refused with 401 | `internal/auth`, `TestAuthAndTenants`, fuzz test |
+| a shim writes or reads what it should not | a grant is for one tenant, store, key, upload and mode; the port serves only a part PUT and a range GET | `TestRefusalsOfTheShimPort` |
 | a key that leaves its place (`..`, empty segment, control characters, too long) | the key is validated and every segment is escaped to a safe file name; ids are checked against hex | `internal/layout`, fuzz test |
 | a body that is not the one named, or a part changed on its way | the digest is checked before the write is kept; refused with 400, nothing left | `TestWrongDigestLeavesNothing` |
 | a node returns damaged or other bytes | the read checks the digest and goes to the next node; the check and the repair find it | `TestReadChecksBlocks`, `TestCheckFindsALostDiskAndDamage` |

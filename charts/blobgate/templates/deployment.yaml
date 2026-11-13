@@ -41,34 +41,37 @@ spec:
             - {name: metrics, containerPort: {{ .Values.config.metricsPort }}}
             {{- end }}
           env:
-            - {name: CINIM_RQLITE_URL, value: {{ .Values.rqliteUrl | quote }}}
-            - {name: CINIM_STORAGE_PORT, value: {{ .Values.config.port | toString | quote }}}
-            - {name: CINIM_STORAGE_SHIM_PORT, value: {{ .Values.config.shimPort | toString | quote }}}
+            - {name: BLOBGATE_RQLITE_URL, value: {{ .Values.rqliteUrl | quote }}}
+            - {name: BLOBGATE_PORT, value: {{ .Values.config.port | toString | quote }}}
+            - {name: BLOBGATE_SHIM_PORT, value: {{ .Values.config.shimPort | toString | quote }}}
+            # the key is `tenants`; a Secret of the first version has `shards`: either is read (a variable whose key is not there is left out)
+            - name: BLOBGATE_TENANTS
+              valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: tenants, optional: true}}
             - name: CINIM_STORAGE_SHARDS
-              valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: shards}}
-            - name: CINIM_STORAGE_ADMIN_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: shards, optional: true}}
+            - name: BLOBGATE_ADMIN_TOKEN
               valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: adminToken}}
-            - name: CINIM_STORAGE_SEAL_KEY
+            - name: BLOBGATE_SEAL_KEY
               valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: sealKey}}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_METRICS_PORT" "value" .Values.config.metricsPort) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_THREADS" "value" .Values.config.threads) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_RESERVE_BYTES" "value" .Values.config.reserveBytes) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_REPAIR_SECONDS" "value" .Values.config.repairSeconds) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_REPAIR_RETRY_SECONDS" "value" .Values.config.repairRetrySeconds) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_CHECK_SECONDS" "value" .Values.config.checkSeconds) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_LEASE_SECONDS" "value" .Values.config.leaseSeconds) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_UPLOAD_TTL_SECONDS" "value" .Values.config.uploadTtlSeconds) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_DEEP_CHECK" "value" (ternary "1" "" .Values.config.deepCheck)) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_DEEP_CHECK_BYTES_PER_SECOND" "value" .Values.config.deepCheckBytesPerSecond) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_METRICS_PORT" "value" .Values.config.metricsPort) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_THREADS" "value" .Values.config.threads) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_RESERVE_BYTES" "value" .Values.config.reserveBytes) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_REPAIR_SECONDS" "value" .Values.config.repairSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_REPAIR_RETRY_SECONDS" "value" .Values.config.repairRetrySeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_CHECK_SECONDS" "value" .Values.config.checkSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_LEASE_SECONDS" "value" .Values.config.leaseSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_UPLOAD_TTL_SECONDS" "value" .Values.config.uploadTtlSeconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_DEEP_CHECK" "value" (ternary "1" "" .Values.config.deepCheck)) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_DEEP_CHECK_BYTES_PER_SECOND" "value" .Values.config.deepCheckBytesPerSecond) | nindent 12 }}
             {{- if .Values.backup.existingSecret }}
-            - name: CINIM_STORAGE_BACKUP_NODES
+            - name: BLOBGATE_BACKUP_NODES
               valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: nodes}}
-            - name: CINIM_STORAGE_BACKUP_KEY
+            - name: BLOBGATE_BACKUP_KEY
               valueFrom: {secretKeyRef: {name: {{ .Values.backup.existingSecret }}, key: key}}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_BACKUP_KEEP" "value" .Values.backup.keep) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_BACKUP_SECONDS" "value" .Values.backup.seconds) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_RESTORE_ON_EMPTY" "value" (ternary "1" "" .Values.backup.restoreOnEmpty)) | nindent 12 }}
-            {{- include "blobgate.optEnv" (dict "name" "CINIM_STORAGE_RESTORE_FALLBACK" "value" (ternary "1" "" .Values.backup.restoreFallback)) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_BACKUP_KEEP" "value" .Values.backup.keep) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_BACKUP_SECONDS" "value" .Values.backup.seconds) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_RESTORE_ON_EMPTY" "value" (ternary "1" "" .Values.backup.restoreOnEmpty)) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_RESTORE_FALLBACK" "value" (ternary "1" "" .Values.backup.restoreFallback)) | nindent 12 }}
             {{- end }}
             - name: HOSTNAME
               valueFrom: {fieldRef: {fieldPath: metadata.name}}

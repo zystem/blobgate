@@ -22,8 +22,8 @@ import (
 
 var (
 	url    = flag.String("url", "http://127.0.0.1:18090", "the module")
-	secret = flag.String("secret", "", "the secret of the shard")
-	shard  = flag.String("shard", "001", "the shard")
+	secret = flag.String("secret", "", "the secret of the tenant")
+	tenant = flag.String("tenant", "001", "the tenant")
 	admin  = flag.String("admin", "", "the admin token (to register the store)")
 	nodes  = flag.String("nodes", "", "directories of local nodes, comma separated (registers the store `bench` over them)")
 	keyArg = flag.String("seal", "", "a key text: the store seals its blocks")
@@ -42,8 +42,8 @@ func call(method, path, query string, hdr map[string]string, body []byte) (int, 
 		t += "?" + query
 	}
 	req, _ := http.NewRequest(method, *url+t, bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+auth.SignTarget(*secret, *shard, method, t, time.Now().Unix()))
-	req.Header.Set("X-Cinim-Shard", *shard)
+	req.Header.Set("Authorization", "Bearer "+auth.SignTarget(*secret, *tenant, method, t, time.Now().Unix()))
+	req.Header.Set("X-Blobgate-Tenant", *tenant)
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}

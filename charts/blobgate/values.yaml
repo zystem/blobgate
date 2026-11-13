@@ -7,18 +7,19 @@ image:
 imagePullSecrets: []
 
 nameOverride: ""
-fullnameOverride: ""    # the CiNim core expects the Service to be called cinim-storage unless CINIM_STORAGE_URL says otherwise
+fullnameOverride: ""    # the CiNim core expects the Service to be called cinim-storage unless BLOBGATE_URL says otherwise
 
 replicas: 2              # one holds the lease and does the repair; the others serve. 1 is fine for a trial.
 
 # the rqlite the module keeps its records in (required)
 rqliteUrl: ""
 
-# The secrets. Name a Secret that you made (keys: shards, adminToken, sealKey), or let the chart make one from `secrets` below.
+# The secrets. Name a Secret that you made (keys: tenants, adminToken, sealKey; a key `shards` of the first version is read too), or let the chart make one from `secrets` below.
 # A value written here is in the values of the release: use `existingSecret` for anything but a trial.
 existingSecret: ""
 secrets:
-  shards: {}              # shard (digits) -> secret of at least 16 characters, e.g. {"001": "..."}
+  tenants: {}             # tenant -> secret of at least 16 characters, e.g. {"acme": "..."}
+  shards: {}              # the old name of `tenants`; read when `tenants` is empty
   adminToken: ""          # at least 16 characters
   sealKey: ""             # at least 16 characters; keep it apart from the database
 

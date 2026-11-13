@@ -9,9 +9,40 @@ import (
 	"strings"
 )
 
+// legacy names: the settings were called CINIM_STORAGE_<X> (CINIM_RQLITE_URL, CINIM_SHARD, CINIM_STORAGE_SHARDS) while the program was the storage module of one product. The new names are BLOBGATE_<X>
+// (BLOBGATE_TENANT, BLOBGATE_TENANTS for the shards, now called tenants); the old ones still work, and a new one wins when both are set.
+func legacyNames(name string) []string {
+	suffix, ok := strings.CutPrefix(name, "BLOBGATE_")
+	if !ok {
+		return nil
+	}
+	switch suffix {
+	case "TENANTS":
+		return []string{"CINIM_STORAGE_SHARDS"}
+	case "TENANT":
+		return []string{"CINIM_SHARD"}
+	case "RQLITE_URL":
+		return []string{"CINIM_RQLITE_URL"}
+	}
+	return []string{"CINIM_STORAGE_" + suffix}
+}
+
+// Lookup returns the value of a setting by its new name, else by its old one.
+func Lookup(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	for _, old := range legacyNames(name) {
+		if v := os.Getenv(old); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // Get returns the value of NAME, or the contents of the file named by NAME_FILE (one trailing newline removed). Both set is an error: which of the two is meant is not for the program to guess.
 func Get(name string) (string, error) {
-	v, f := os.Getenv(name), os.Getenv(name+"_FILE")
+	v, f := Lookup(name), Lookup(name+"_FILE")
 	switch {
 	case v != "" && f != "":
 		return "", fmt.Errorf("%s and %s_FILE are both set: set one", name, name)

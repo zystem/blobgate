@@ -2,14 +2,14 @@
 
 [![CI](https://github.com/zystem/blobgate/actions/workflows/ci.yml/badge.svg)](https://github.com/zystem/blobgate/actions/workflows/ci.yml) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16650/badge)](https://www.bestpractices.dev/projects/16650) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/zystem/blobgate/badge)](https://scorecard.dev/viewer/?uri=github.com/zystem/blobgate)
 
-A storage service that keeps your blocks of data on any number of servers that [rclone](https://rclone.org) can talk to (FTP, WebDAV, SFTP, S3, a local disk, and more), checks every block against its SHA-256 when it reads it, and keeps the servers alike. It is the storage module of [CiNim](https://github.com/zystem/CiNim).
+A storage service that keeps blocks of data for many tenants on any number of servers that [rclone](https://rclone.org) can talk to (FTP, WebDAV, SFTP, S3, a local disk, and more), checks every block against its SHA-256 when it reads it, and keeps the servers alike. It was made as the storage of the build system [CiNim](https://github.com/zystem/CiNim) and is meant for any service that needs reliable storage of blobs (artifacts, caches, packages, backups).
 
 ## When to use it, and when not
 
 Use it when you need an HTTP API for objects (put, read a range, delete, multipart) over storage that you do not control or that is of different kinds, with a copy on more than one server, and you can run
 an [rqlite](https://rqlite.io) next to it (it keeps its records there and nothing on a disk of its own).
 
-Do not use it as a general S3 server (the API is the small one of `internal/api/openapi.yaml`, made for CiNim's core), when one bucket of one provider is enough (use that provider), or when you need
+Do not use it as a general S3 server (the API is the small one of `internal/api/openapi.yaml`, made for a service that keeps its own metadata and uses this one for the bytes), when one bucket of one provider is enough (use that provider), or when you need
 to list the contents of a store (it never lists; its inventory is the database).
 
 ## The parts
@@ -31,9 +31,9 @@ An object is a row in rqlite and a set of blocks (files) on the nodes. The row i
 docker build -t blobgate .        # or use ghcr.io/zystem/blobgate:<version>
 docker run -d --name rq -p 4001:4001 rqlite/rqlite -fk -disco-mode=
 docker run -d --name blobgate --network host --read-only --tmpfs /data:rw,mode=1777,size=2g \
-  -e CINIM_RQLITE_URL=http://127.0.0.1:4001 -e CINIM_STORAGE_PORT=18090 \
-  -e CINIM_STORAGE_SHARDS=001=a-secret-of-at-least-16-chars \
-  -e CINIM_STORAGE_ADMIN_TOKEN=an-admin-token-16-chars -e CINIM_STORAGE_SEAL_KEY=a-seal-key-16-chars-long blobgate
+  -e BLOBGATE_RQLITE_URL=http://127.0.0.1:4001 -e BLOBGATE_PORT=18090 \
+  -e BLOBGATE_TENANTS=acme=a-secret-of-at-least-16-chars \
+  -e BLOBGATE_ADMIN_TOKEN=an-admin-token-16-chars -e BLOBGATE_SEAL_KEY=a-seal-key-16-chars-long blobgate
 ```
 
 Check that it is up:
@@ -57,28 +57,38 @@ curl -s -X PUT localhost:18090/v1/admin/stores/demo -H "Authorization: Bearer an
 {"checked":true,"name":"demo"}
 ```
 
-Put an object and read it back. A call of the core carries a token; `blobgate token` makes one (the output of the token is cut here):
+Put an object. A call carries a token for the tenant (`acme`, with its secret); `blobgate token` makes one (the output of the token is cut here). The body needs no digest and no length; a type and some metadata are kept with it:
 
 ```bash
-T=$(docker run --rm --entrypoint /blobgate blobgate token 001 a-secret-of-at-least-16-chars PUT /v1/stores/_default/objects/acme/hello.txt)
-curl -s -X PUT localhost:18090/v1/stores/_default/objects/acme/hello.txt -H "Authorization: Bearer $T" -H "X-Cinim-Shard: 001" \
-  -H "X-Content-SHA256: $(printf 'hello blobgate' | sha256sum | cut -d' ' -f1)" --data-binary 'hello blobgate'
+T=$(docker run --rm --entrypoint /blobgate blobgate token acme a-secret-of-at-least-16-chars PUT /v1/stores/_default/objects/docs/hello.txt)
+curl -s -X PUT localhost:18090/v1/stores/_default/objects/docs/hello.txt -H "Authorization: Bearer $T" -H "X-Blobgate-Tenant: acme" \
+  -H "Content-Type: text/plain" -H "X-Blobgate-Meta-Author: me" --data-binary 'hello blobgate'
 ```
 
 ```
 {"size":14}
 ```
 
+Read it back, the whole of it (the headers are those of a plain HTTP server: a version tag, a time, the type, your metadata; `HEAD` gives them without the body, `Range` a part):
+
 ```bash
-T=$(docker run --rm --entrypoint /blobgate blobgate token 001 a-secret-of-at-least-16-chars GET /v1/stores/_default/objects/acme/hello.txt)
-curl -s localhost:18090/v1/stores/_default/objects/acme/hello.txt -H "Authorization: Bearer $T" -H "X-Cinim-Shard: 001" -H "Range: bytes=0-13"
+T=$(docker run --rm --entrypoint /blobgate blobgate token acme a-secret-of-at-least-16-chars GET /v1/stores/_default/objects/docs/hello.txt)
+curl -si localhost:18090/v1/stores/_default/objects/docs/hello.txt -H "Authorization: Bearer $T" -H "X-Blobgate-Tenant: acme"
 ```
 
 ```
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Content-Length: 14
+Content-Type: text/plain
+Etag: "f80f5bdef9255103e23a6492a9f7d96a"
+Last-Modified: Fri, 13 Nov 2026 19:01:53 GMT
+X-Blobgate-Meta-Author: me
+
 hello blobgate
 ```
 
-Run on 2026-11-12 with the image of this repository, as shown. Next: [connect a real node](docs/configuration.md), [back up the database](docs/backup.md).
+Run on 2026-11-13 with the image of this repository, as shown (the date, the tag and the token differ on your machine). Next: [connect a real node](docs/configuration.md), [back up the database](docs/backup.md).
 
 ## Ways to install
 
@@ -87,7 +97,7 @@ Run on 2026-11-12 with the image of this repository, as shown. Next: [connect a 
 | the image `ghcr.io/zystem/blobgate:<version>` | production | linux/amd64 and linux/arm64; static program, no shell, user 65532, works with a read-only root; the module writes nothing to a disk |
 | the chart `oci://ghcr.io/zystem/charts/blobgate` (`helm install blobgate oci://ghcr.io/zystem/charts/blobgate --version <version> -f values.yaml`) | a cluster | [charts/blobgate/values.yaml](charts/blobgate/values.yaml) says every value; `rqliteUrl` and a Secret (or `secrets`) are needed |
 | the program from the [releases](https://github.com/zystem/blobgate/releases) | a workstation, a VM | `blobgate_<version>_linux_<arch>.tar.gz` with `checksums.txt` |
-| `docker build .` or `go build ./cmd/blobgate` (Go 1.26) | tests, changes | `go test ./...` skips what needs Docker or rqlite unless `CINIM_RQLITE_URL` and `BLOBGATE_DOCKER_TESTS=1` are set |
+| `docker build .` or `go build ./cmd/blobgate` (Go 1.26) | tests, changes | `go test ./...` skips what needs Docker or rqlite unless `BLOBGATE_RQLITE_URL` and `BLOBGATE_DOCKER_TESTS=1` are set |
 
 ## Uninstall
 
@@ -100,7 +110,7 @@ the nodes, where they stay until you remove them.
 * **node**: one server that rclone talks to; a block is written to every node of its store.
 * **block**: a file of at most 8 MiB on a node; an object is one or more blocks.
 * **generation**: one write of an object; its blocks lie under their own path and are never overwritten.
-* **shard**: a CiNim tenant group; its number is the first part of every key, and each has its own secret.
+* **tenant**: a CiNim tenant group; its number is the first part of every key, and each has its own secret.
 * **grant**: a token the core gives a step's shim to put the parts of one upload or read one object on the port for shims.
 * **repair**: copying a block to a node that missed it, from a node that has it, checked by its digest.
 

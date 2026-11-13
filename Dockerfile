@@ -19,7 +19,7 @@ FROM gcr.io/distroless/static:${RUNTIME_TAG}
 ARG VERSION=dev
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="blobgate" \
-      org.opencontainers.image.description="The storage module of CiNim: blocks on any server rclone can talk to, mirrored, checked by SHA-256" \
+      org.opencontainers.image.description="A blob storage service: blocks on any server rclone can talk to, mirrored, checked by SHA-256, for many tenants" \
       org.opencontainers.image.source="https://github.com/zystem/blobgate" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"

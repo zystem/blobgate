@@ -33,7 +33,7 @@ type Entry struct {
 // Registry reads and writes the stores in rqlite and keeps the opened nodes of each (a node of FTP or SFTP costs a connection to open).
 type Registry struct {
 	DB  *rq.Client
-	Key []byte
+	Key seal.Keys
 
 	// OpenHook, if set, is called with every store that Load opens (the tests wrap the nodes of a store with it to make them fail in ways a directory cannot)
 	OpenHook func(*Mirror)
@@ -89,7 +89,7 @@ type cached struct {
 }
 
 // NewRegistry makes a registry over the database with the key the secrets are sealed under.
-func NewRegistry(db *rq.Client, key []byte) *Registry {
+func NewRegistry(db *rq.Client, key seal.Keys) *Registry {
 	return &Registry{DB: db, Key: key, cache: map[string]cached{}}
 }
 

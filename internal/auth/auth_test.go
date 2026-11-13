@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func load(t *testing.T) vec {
 // The strings must equal those of the Nim module byte for byte (STO-006 contract, D-60).
 func TestTokenMatchesNimVectors(t *testing.T) {
 	for _, x := range load(t).Token {
-		if got := SignTarget(x.Secret, x.Shard, x.Method, x.Target, x.Now); got != x.Token {
+		if got := SignTargetV1(x.Secret, x.Shard, x.Method, x.Target, x.Now); got != x.Token {
 			t.Errorf("%s %s: got %s want %s", x.Method, x.Target, got, x.Token)
 		}
 		if !VerifyTarget(x.Secret, x.Shard, x.Method, x.Target, x.Token, x.Now+10) {
@@ -73,10 +74,10 @@ func TestTokenRefusals(t *testing.T) {
 
 func TestGrantMatchesNimVectors(t *testing.T) {
 	for _, x := range load(t).Grant {
-		if got := SignGrant(x.Secret, x.Shard, x.Store, x.Key, x.Upload, x.Mode, x.Now); got != x.Token {
+		if got := SignGrantV1(x.Secret, x.Shard, x.Store, x.Key, x.Upload, x.Mode, x.Now); got != x.Token {
 			t.Errorf("%s: got %s want %s", x.Mode, got, x.Token)
 		}
-		if GrantShard(x.Token) != x.Shard {
+		if GrantTenant(x.Token) != x.Shard {
 			t.Error("grant shard")
 		}
 		if !VerifyGrant(x.Secret, x.Shard, x.Store, x.Key, x.Upload, x.Mode, x.Token, x.Now+60) {
@@ -92,7 +93,7 @@ func TestGrantMatchesNimVectors(t *testing.T) {
 			t.Error("expired grant accepted")
 		}
 	}
-	if GrantShard("v1.1.2") != "" {
+	if GrantTenant("v1.1.2") != "" {
 		t.Error("not a grant")
 	}
 }
@@ -102,6 +103,45 @@ func FuzzParse(f *testing.F) {
 	f.Fuzz(func(t *testing.T, tok, g string) {
 		VerifyTarget("s", "001", "GET", "/x", tok, 1700000000)
 		VerifyGrant("s", "001", "m", "k", "", "r", g, 1700000000)
-		GrantShard(g)
+		GrantTenant(g)
 	})
+}
+
+// The new tokens (v2, g2) are made under a domain of the program's own and verified; the old ones are still accepted; one kind is no good as the other.
+func TestV2AndV1(t *testing.T) {
+	now := int64(1700000000)
+	v2 := SignTarget("secret-of-a-tenant", "acme", "put", "/v1/stores/m/objects/k", now)
+	v1 := SignTargetV1("secret-of-a-tenant", "acme", "put", "/v1/stores/m/objects/k", now)
+	if !strings.HasPrefix(v2, "v2.") || !strings.HasPrefix(v1, "v1.") || v2[3:] == v1[3:] {
+		t.Fatal(v2, v1)
+	}
+	for _, tok := range []string{v1, v2} {
+		if !VerifyTarget("secret-of-a-tenant", "acme", "PUT", "/v1/stores/m/objects/k", tok, now+5) {
+			t.Errorf("%s refused", tok[:2])
+		}
+		if VerifyTarget("secret-of-a-tenant", "acme", "GET", "/v1/stores/m/objects/k", tok, now+5) {
+			t.Errorf("%s accepted for another method", tok[:2])
+		}
+	}
+	// a v2 mac under the label of v1 (and the opposite) is not a token
+	if VerifyTarget("secret-of-a-tenant", "acme", "PUT", "/v1/stores/m/objects/k", "v1."+v2[3:], now+5) || VerifyTarget("secret-of-a-tenant", "acme", "PUT", "/v1/stores/m/objects/k", "v2."+v1[3:], now+5) {
+		t.Fatal("the version label can be changed")
+	}
+	g2 := SignGrant("s", "acme", "main", "a/b", "up1", "w", now)
+	g1 := SignGrantV1("s", "acme", "main", "a/b", "up1", "w", now)
+	for _, g := range []string{g1, g2} {
+		if GrantTenant(g) != "acme" || !VerifyGrant("s", "acme", "main", "a/b", "up1", "w", g, now+1) || VerifyGrant("s", "acme", "main", "a/c", "up1", "w", g, now+1) {
+			t.Errorf("grant %s", g[:2])
+		}
+	}
+	if VerifyGrant("s", "acme", "main", "a/b", "up1", "w", "g1."+g2[3:], now+1) || VerifyGrant("s", "acme", "main", "a/b", "up1", "w", "g2."+g1[3:], now+1) {
+		t.Fatal("the grant label can be changed")
+	}
+	for ok, names := range map[bool][]string{true: {"001", "acme", "team-a_1", strings.Repeat("a", 64)}, false: {"", "-a", "A", "a b", "a.b", "a/b", strings.Repeat("a", 65)}} {
+		for _, n := range names {
+			if ValidTenant(n) != ok {
+				t.Errorf("%q: %v", n, !ok)
+			}
+		}
+	}
 }

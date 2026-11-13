@@ -88,9 +88,9 @@ func TestValidateCommand(t *testing.T) {
 func TestBackupCommands(t *testing.T) {
 	rqURL := startRqlite(t)
 	dir := t.TempDir()
-	t.Setenv("CINIM_RQLITE_URL", rqURL)
-	t.Setenv("CINIM_STORAGE_BACKUP_NODES", `[{"remote":":local:`+filepath.Join(dir, "n1")+`"},{"remote":":local:`+filepath.Join(dir, "n2")+`"}]`)
-	t.Setenv("CINIM_STORAGE_BACKUP_KEY", "a-key-for-the-command-test")
+	t.Setenv("BLOBGATE_RQLITE_URL", rqURL)
+	t.Setenv("BLOBGATE_BACKUP_NODES", `[{"remote":":local:`+filepath.Join(dir, "n1")+`"},{"remote":":local:`+filepath.Join(dir, "n2")+`"}]`)
+	t.Setenv("BLOBGATE_BACKUP_KEY", "a-key-for-the-command-test")
 	c := rq.New(rqURL)
 	ctx := context.Background()
 	if _, err := c.Exec(ctx, false, rq.S("CREATE TABLE zz (a TEXT)"), rq.S("INSERT INTO zz VALUES ('kept')")); err != nil {
@@ -129,12 +129,12 @@ func TestBackupCommands(t *testing.T) {
 		t.Fatalf("the data is not back: %v", rows)
 	}
 	// the settings: a missing url, missing nodes, a bad flag
-	t.Setenv("CINIM_RQLITE_URL", "")
+	t.Setenv("BLOBGATE_RQLITE_URL", "")
 	if _, code := capture(t, func() int { return backupCommand("backup", nil) }); code != 2 {
 		t.Fatal("no url")
 	}
-	t.Setenv("CINIM_RQLITE_URL", rqURL)
-	t.Setenv("CINIM_STORAGE_BACKUP_NODES", "")
+	t.Setenv("BLOBGATE_RQLITE_URL", rqURL)
+	t.Setenv("BLOBGATE_BACKUP_NODES", "")
 	if _, code := capture(t, func() int { return backupCommand("backup", nil) }); code != 2 {
 		t.Fatal("no nodes")
 	}
@@ -147,9 +147,9 @@ func TestBackupCommands(t *testing.T) {
 func TestRestoreOnEmptyAndBackupLoop(t *testing.T) {
 	rqURL := startRqlite(t)
 	dir := t.TempDir()
-	t.Setenv("CINIM_RQLITE_URL", rqURL)
-	t.Setenv("CINIM_STORAGE_BACKUP_NODES", `[{"remote":":local:`+filepath.Join(dir, "n1")+`"}]`)
-	t.Setenv("CINIM_STORAGE_BACKUP_KEY", "a-key-for-the-loop-test")
+	t.Setenv("BLOBGATE_RQLITE_URL", rqURL)
+	t.Setenv("BLOBGATE_BACKUP_NODES", `[{"remote":":local:`+filepath.Join(dir, "n1")+`"}]`)
+	t.Setenv("BLOBGATE_BACKUP_KEY", "a-key-for-the-loop-test")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
 	c := rq.New(rqURL)

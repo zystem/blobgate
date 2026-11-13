@@ -31,7 +31,7 @@ blobgate is a stateless service: any number of replicas, one rqlite, nodes that 
 
 ## The data model
 
-An **object** is a row of `storage_objects` (the store, the key with the shard in front, the size, the generation, the size of a block, the SHA-256 of every block as stored, the key of sealing) and the **blocks** it names:
+An **object** is a row of `storage_objects` (the store, the key with the tenant in front, the size, the generation, the size of a block, the SHA-256 of every block as stored, the key of sealing) and the **blocks** it names:
 files `<escaped key>~<generation>/<n>` on every node of the store. The row is the commit. `storage_uploads` and `storage_parts` hold what an upload that has begun has written; `storage_repair` holds what a node has to be
 given or to lose; `storage_lease` holds who does the background work; `storage_stores` holds the stores (their secrets sealed).
 

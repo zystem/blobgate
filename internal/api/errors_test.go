@@ -39,12 +39,10 @@ func TestRefusalsOfTheCoreAPI(t *testing.T) {
 	o := "/v1/stores/main/objects/k/a"
 	r.put("k/a", []byte("hello world"))
 	r.runCore(t, []req{
-		{"GET with no Range", "GET", o, "", nil, "", 400, "range_required"},
-		{"Range that is not bytes", "GET", o, "", map[string]string{"Range": "items=1-2"}, "", 400, "range_required"},
-		{"Range with no end", "GET", o, "", map[string]string{"Range": "bytes=1-"}, "", 400, "invalid_range"},
+		{"Range that is not bytes", "GET", o, "", map[string]string{"Range": "items=1-2"}, "", 400, "invalid_range"},
 		{"Range backwards", "GET", o, "", map[string]string{"Range": "bytes=5-1"}, "", 400, "invalid_range"},
-		{"Range past the object", "GET", o, "", map[string]string{"Range": "bytes=500-600"}, "", 400, "invalid_range"},
-		{"Range too long", "GET", o, "", map[string]string{"Range": "bytes=0-999999999999"}, "", 400, "invalid_range"},
+		{"two ranges", "GET", o, "", map[string]string{"Range": "bytes=0-1,4-5"}, "", 400, "invalid_range"},
+		{"Range past the object", "GET", o, "", map[string]string{"Range": "bytes=500-600"}, "", 416, "range_not_satisfiable"},
 		{"stat of nothing", "GET", "/v1/stores/main/objects/k/none", "stat", nil, "", 404, "no_such_object"},
 		{"read of nothing", "GET", "/v1/stores/main/objects/k/none", "", map[string]string{"Range": "bytes=0-1"}, "", 404, "no_such_object"},
 		{"parts of an upload that is not there", "GET", o, "upload=abcdef0123456789&parts", nil, "", 200, "parts"},
@@ -178,7 +176,7 @@ func TestRefusalsOfTheShimPort(t *testing.T) {
 		{"a write grant for a read", "GET", "/s/main/k/a", w, map[string]string{"Range": "bytes=0-1"}, 401},
 		{"a part with no upload", "PUT", "/s/main/k/a?part=1", auth.SignGrant(secret1, "001", "main", "k/a", "", "w", now), x, 400},
 		{"a method that is not there", "DELETE", "/s/main/k/a", rd, nil, 405},
-		{"a read with no Range", "GET", "/s/main/k/a", rd, nil, 400},
+		{"a read with a Range that is not one", "GET", "/s/main/k/a", rd, map[string]string{"Range": "x"}, 400},
 		{"a read of a store that is not there", "GET", "/s/nosuch/k/a", auth.SignGrant(secret1, "001", "nosuch", "k/a", "", "r", now), map[string]string{"Range": "bytes=0-1"}, 404},
 		{"a read of an object that is not there", "GET", "/s/main/k/a", rd, map[string]string{"Range": "bytes=0-1"}, 404},
 		{"health", "GET", "/healthz", "", nil, 200},
@@ -217,5 +215,49 @@ func TestTheLoopAndTheSweepOfANodeThatIsAway(t *testing.T) {
 	rows, err := r.dbc.Query(context.Background(), rqS("SELECT count(*) FROM storage_lease WHERE name = 'repair' AND until = 0"))
 	if err != nil || len(rows) == 0 || fmt.Sprint(rows[0][0]) != "1" {
 		t.Fatalf("the lease was not let go: %v %v", rows, err)
+	}
+}
+
+// The callers of the first version still work: the header X-Cinim-Shard, the tokens v1 and the grants g1; and a tenant may be named as the operator likes.
+func TestFirstVersionCallersStillWork(t *testing.T) {
+	r := newRig(t, func(c *Config) { c.ShardSecrets["acme-corp"] = "the-secret-of-acme-corp-tenant" })
+	r.mirror(0)
+	now := time.Now().Unix()
+	body := []byte("old caller")
+	target := "/v1/stores/main/objects/k/old"
+	// v1 token and the old header
+	req, _ := http.NewRequest("PUT", r.ts.URL+target, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+auth.SignTargetV1(secret1, "001", "PUT", target, now))
+	req.Header.Set("X-Cinim-Shard", "001")
+	req.Header.Set("X-Content-SHA256", sha(body))
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("v1 token with the old header: %v %v", err, resp)
+	}
+	// v2 token with the old header, v1 token with the new header
+	for name, h := range map[string]map[string]string{
+		"v2, old header": {"Authorization": "Bearer " + auth.SignTarget(secret1, "001", "GET", target+"", now), "X-Cinim-Shard": "001"},
+		"v1, new header": {"Authorization": "Bearer " + auth.SignTargetV1(secret1, "001", "GET", target, now), "X-Blobgate-Tenant": "001"},
+	} {
+		h["Range"] = "bytes=0-9"
+		if code, d, _ := r.do("GET", target, h, nil); code != 206 || string(d) != "old caller" {
+			t.Errorf("%s: %d %s", name, code, d)
+		}
+	}
+	// a v1 grant on the port for shims
+	grant := auth.SignGrantV1(secret1, "001", "main", "k/old", "", "r", now)
+	if code := r.shimDo("GET", "/s/main/k/old", grant, map[string]string{"Range": "bytes=0-9"}, nil); code != 206 {
+		t.Errorf("a grant of the first version: %d", code)
+	}
+	// a tenant with a name that is not digits
+	t2 := "/v1/stores/main/objects/k/two"
+	b2 := []byte("two")
+	h := map[string]string{"Authorization": "Bearer " + auth.SignTarget("the-secret-of-acme-corp-tenant", "acme-corp", "PUT", t2, now), "X-Blobgate-Tenant": "acme-corp", "X-Content-SHA256": sha(b2)}
+	if code, d, _ := r.do("PUT", t2, h, b2); code != 200 {
+		t.Fatalf("tenant acme-corp: %d %s", code, d)
+	}
+	// and it does not see the keys of tenant 001
+	h2 := map[string]string{"Authorization": "Bearer " + auth.SignTarget("the-secret-of-acme-corp-tenant", "acme-corp", "GET", target, now), "X-Blobgate-Tenant": "acme-corp", "Range": "bytes=0-1"}
+	if code, _, _ := r.do("GET", target, h2, nil); code != 404 {
+		t.Errorf("a tenant sees the object of another: %d", code)
 	}
 }

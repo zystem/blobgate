@@ -1,7 +1,7 @@
 package api
 
 // Tests with real servers: two SFTPGo containers, one serving WebDAV and the other FTP (and SFTP), which a mirror of different kinds of node is made of. They need Docker and the image
-// `drakkan/sftpgo`, and run only with BLOBGATE_DOCKER_TESTS=1 (and CINIM_RQLITE_URL, as the other tests of the API).
+// `drakkan/sftpgo`, and run only with BLOBGATE_DOCKER_TESTS=1 (and BLOBGATE_RQLITE_URL, as the other tests of the API).
 
 import (
 	"context"

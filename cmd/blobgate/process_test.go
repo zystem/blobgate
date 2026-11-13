@@ -101,8 +101,8 @@ func startModule(t *testing.T, rqURL string, env ...string) *proc {
 	t.Helper()
 	p := &proc{port: freePort(t), log: &bytes.Buffer{}}
 	p.cmd = exec.Command(binary(t))
-	p.cmd.Env = append(os.Environ(), "CINIM_RQLITE_URL="+rqURL, fmt.Sprintf("CINIM_STORAGE_PORT=%d", p.port), "CINIM_STORAGE_SHIM_PORT=0",
-		"CINIM_STORAGE_SHARDS=001="+secret, "CINIM_STORAGE_ADMIN_TOKEN="+adminT, "CINIM_STORAGE_SEAL_KEY=a-seal-key-for-the-process-test")
+	p.cmd.Env = append(os.Environ(), "BLOBGATE_RQLITE_URL="+rqURL, fmt.Sprintf("BLOBGATE_PORT=%d", p.port), "BLOBGATE_SHIM_PORT=0",
+		"BLOBGATE_TENANTS=001="+secret, "BLOBGATE_ADMIN_TOKEN="+adminT, "BLOBGATE_SEAL_KEY=a-seal-key-for-the-process-test")
 	p.cmd.Env = append(p.cmd.Env, env...)
 	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
 	if err := p.cmd.Start(); err != nil {
@@ -140,7 +140,7 @@ func (p *proc) call(method, path, query string, hdr map[string]string, body []by
 	}
 	req, _ := http.NewRequest(method, p.url(t), bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+auth.SignTarget(secret, "001", method, t, time.Now().Unix()))
-	req.Header.Set("X-Cinim-Shard", "001")
+	req.Header.Set("X-Blobgate-Tenant", "001")
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
@@ -191,7 +191,7 @@ func slowPut(t *testing.T, p *proc, key string, size, sent int) net.Conn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\nX-Cinim-Shard: 001\r\nX-Content-SHA256: %s\r\nContent-Length: %d\r\n\r\n",
+	fmt.Fprintf(conn, "PUT %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\nX-Blobgate-Tenant: 001\r\nX-Content-SHA256: %s\r\nContent-Length: %d\r\n\r\n",
 		target, auth.SignTarget(secret, "001", "PUT", target, time.Now().Unix()), sha(body), size)
 	if _, err := conn.Write(body[:sent]); err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestKillNineInTheMiddleOfAWrite(t *testing.T) {
 	rqURL := startRqlite(t)
 	dir := t.TempDir()
 	n1, n2 := filepath.Join(dir, "n1"), filepath.Join(dir, "n2")
-	env := []string{"CINIM_STORAGE_UPLOAD_TTL_SECONDS=2", "CINIM_STORAGE_REPAIR_SECONDS=1", "CINIM_STORAGE_REPAIR_RETRY_SECONDS=1"}
+	env := []string{"BLOBGATE_UPLOAD_TTL_SECONDS=2", "BLOBGATE_REPAIR_SECONDS=1", "BLOBGATE_REPAIR_RETRY_SECONDS=1"}
 	p := startModule(t, rqURL, env...)
 	p.register(t, n1, n2)
 	keep := bytes.Repeat([]byte("k"), 70000)
@@ -264,7 +264,7 @@ func TestTheReplicaThatTakesOver(t *testing.T) {
 	rqURL := startRqlite(t)
 	dir := t.TempDir()
 	n1, n2 := filepath.Join(dir, "n1"), filepath.Join(dir, "n2")
-	env := []string{"CINIM_STORAGE_LEASE_SECONDS=4", "CINIM_STORAGE_REPAIR_SECONDS=1", "CINIM_STORAGE_REPAIR_RETRY_SECONDS=1", "CINIM_STORAGE_CHECK_SECONDS=3600"}
+	env := []string{"BLOBGATE_LEASE_SECONDS=4", "BLOBGATE_REPAIR_SECONDS=1", "BLOBGATE_REPAIR_RETRY_SECONDS=1", "BLOBGATE_CHECK_SECONDS=3600"}
 	a := startModule(t, rqURL, env...)
 	a.register(t, n1, n2)
 	db := rq.New(rqURL)
@@ -332,11 +332,11 @@ func TestSecretsFromFilesAndTLS(t *testing.T) {
 
 	p := &proc{port: freePort(t), log: &bytes.Buffer{}}
 	p.cmd = exec.Command(binary(t))
-	p.cmd.Env = append(os.Environ(), "CINIM_RQLITE_URL="+rqURL, fmt.Sprintf("CINIM_STORAGE_PORT=%d", p.port), "CINIM_STORAGE_SHIM_PORT=0",
-		"CINIM_STORAGE_SHARDS=", "CINIM_STORAGE_SHARDS_FILE="+put("shards", "001="+secret),
-		"CINIM_STORAGE_ADMIN_TOKEN=", "CINIM_STORAGE_ADMIN_TOKEN_FILE="+put("admin", adminT),
-		"CINIM_STORAGE_SEAL_KEY=", "CINIM_STORAGE_SEAL_KEY_FILE="+put("seal", "a-seal-key-for-the-file-test"),
-		"CINIM_STORAGE_TLS_CERT_FILE="+certFile, "CINIM_STORAGE_TLS_KEY_FILE="+keyFile)
+	p.cmd.Env = append(os.Environ(), "BLOBGATE_RQLITE_URL="+rqURL, fmt.Sprintf("BLOBGATE_PORT=%d", p.port), "BLOBGATE_SHIM_PORT=0",
+		"BLOBGATE_TENANTS=", "BLOBGATE_TENANTS_FILE="+put("shards", "001="+secret),
+		"BLOBGATE_ADMIN_TOKEN=", "BLOBGATE_ADMIN_TOKEN_FILE="+put("admin", adminT),
+		"BLOBGATE_SEAL_KEY=", "BLOBGATE_SEAL_KEY_FILE="+put("seal", "a-seal-key-for-the-file-test"),
+		"BLOBGATE_TLS_CERT_FILE="+certFile, "BLOBGATE_TLS_KEY_FILE="+keyFile)
 	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -368,8 +368,35 @@ func TestSecretsFromFilesAndTLS(t *testing.T) {
 	}
 	// both the value and the file: refused at start, with words
 	bad := exec.Command(binary(t))
-	bad.Env = append(os.Environ(), "CINIM_RQLITE_URL="+rqURL, "CINIM_STORAGE_SHARDS=001="+secret, "CINIM_STORAGE_SEAL_KEY=a-seal-key-for-the-file-test", "CINIM_STORAGE_ADMIN_TOKEN=an-admin-token-for-the-test", "CINIM_STORAGE_ADMIN_TOKEN_FILE="+put("admin2", adminT))
+	bad.Env = append(os.Environ(), "BLOBGATE_RQLITE_URL="+rqURL, "BLOBGATE_TENANTS=001="+secret, "BLOBGATE_SEAL_KEY=a-seal-key-for-the-file-test", "BLOBGATE_ADMIN_TOKEN=an-admin-token-for-the-test", "BLOBGATE_ADMIN_TOKEN_FILE="+put("admin2", adminT))
 	if out, err := bad.CombinedOutput(); err == nil || !strings.Contains(string(out), "both set") {
 		t.Fatalf("a value and a file together: %v %s", err, out)
+	}
+}
+
+// A deployment with the old names of the settings (CINIM_STORAGE_*) starts and serves: nothing has to be renamed on the day of the update.
+func TestOldNamesOfTheSettings(t *testing.T) {
+	rqURL := startRqlite(t)
+	p := &proc{port: freePort(t), log: &bytes.Buffer{}}
+	p.cmd = exec.Command(binary(t))
+	p.cmd.Env = append(os.Environ(), "CINIM_RQLITE_URL="+rqURL, fmt.Sprintf("CINIM_STORAGE_PORT=%d", p.port), "CINIM_STORAGE_SHIM_PORT=0",
+		"CINIM_STORAGE_SHARDS=001="+secret, "CINIM_STORAGE_ADMIN_TOKEN="+adminT, "CINIM_STORAGE_SEAL_KEY=a-seal-key-for-the-old-names")
+	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
+	if err := p.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.cmd.Process.Kill(); _ = p.cmd.Wait() })
+	waitFor(t, "the module answers", 20*time.Second, func() bool {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", p.port))
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == 200
+	})
+	req, _ := http.NewRequest("GET", p.url("/v1/admin/stores"), nil)
+	req.Header.Set("Authorization", "Bearer "+adminT)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("admin with the old names: %v %v", err, resp)
 	}
 }

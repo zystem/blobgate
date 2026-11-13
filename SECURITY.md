@@ -1,6 +1,6 @@
 # Security policy
 
-blobgate keeps the data of build runs (artifacts, caches, and with `blobgate backup` the whole database of the shard), so a report of a weakness is welcome and is read first.
+blobgate keeps the data of build runs (artifacts, caches, and with `blobgate backup` the whole database of the tenant), so a report of a weakness is welcome and is read first.
 
 ## Reporting
 

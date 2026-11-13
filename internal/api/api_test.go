@@ -45,9 +45,9 @@ type rig struct {
 }
 
 func newRig(t *testing.T, mut func(*Config)) *rig {
-	url := os.Getenv("CINIM_RQLITE_URL")
+	url := os.Getenv("BLOBGATE_RQLITE_URL")
 	if url == "" {
-		t.Skip("CINIM_RQLITE_URL is not set")
+		t.Skip("BLOBGATE_RQLITE_URL is not set")
 	}
 	c := rq.New(url)
 	ctx := context.Background()
@@ -101,7 +101,7 @@ func (r *rig) core(method, path, query string, hdr map[string]string, body []byt
 	if query != "" {
 		t += "?" + query
 	}
-	h := map[string]string{"Authorization": "Bearer " + auth.SignTarget(secret1, "001", method, t, time.Now().Unix()), "X-Cinim-Shard": "001"}
+	h := map[string]string{"Authorization": "Bearer " + auth.SignTarget(secret1, "001", method, t, time.Now().Unix()), "X-Blobgate-Tenant": "001"}
 	for k, v := range hdr {
 		h[k] = v
 	}
@@ -214,15 +214,13 @@ func TestWrongDigestLeavesNothing(t *testing.T) {
 	if code != 400 || !strings.Contains(string(data), "sha256_mismatch") {
 		t.Fatalf("%d %s", code, data)
 	}
-	if code, _, _ := r.core("PUT", "/v1/stores/main/objects/a/b", "", nil, []byte("body")); code != 400 {
-		t.Fatal("the digest is required")
+	if code, _, _ := r.core("PUT", "/v1/stores/main/objects/a/b", "", map[string]string{"X-Content-SHA256": "not-a-digest"}, []byte("body")); code != 400 {
+		t.Fatal("a digest that is not one")
 	}
-	if code, _, _ := r.core("PUT", "/v1/stores/main/objects/a/b", "", map[string]string{"X-Content-SHA256": sha(nil)}, nil); code != 400 {
-		t.Fatal("empty body")
-	}
+	// a whole body of several blocks with a wrong digest is refused too, and nothing is left
 	big := make([]byte, BlockSize+1)
-	if code, _, _ := r.core("PUT", "/v1/stores/main/objects/a/b", "", map[string]string{"X-Content-SHA256": sha(big)}, big); code != 413 {
-		t.Fatal("too large")
+	if code, d, _ := r.core("PUT", "/v1/stores/main/objects/a/b", "", map[string]string{"X-Content-SHA256": sha([]byte("other"))}, big); code != 400 || !strings.Contains(string(d), "sha256_mismatch") {
+		t.Fatalf("a long body with a wrong digest: %d %s", code, d)
 	}
 	for _, n := range r.nodes {
 		if f := files(n); len(f) != 0 {
@@ -244,8 +242,8 @@ func TestAuthAndShards(t *testing.T) {
 	}
 	tok := auth.SignTarget(secret1, "001", "GET", "/v1/stores/main/objects/k", time.Now().Unix())
 	for name, h := range map[string]map[string]string{
-		"no token":        {"X-Cinim-Shard": "001", "Range": "bytes=0-1"},
-		"another shard":   {"Authorization": "Bearer " + tok, "X-Cinim-Shard": "002", "Range": "bytes=0-1"},
+		"no token":        {"X-Blobgate-Tenant": "001", "Range": "bytes=0-1"},
+		"another shard":   {"Authorization": "Bearer " + tok, "X-Blobgate-Tenant": "002", "Range": "bytes=0-1"},
 		"no shard header": {"Authorization": "Bearer " + tok, "Range": "bytes=0-1"},
 	} {
 		if code, _, _ := r.do("GET", "/v1/stores/main/objects/k", h, nil); code != 401 {
@@ -253,12 +251,12 @@ func TestAuthAndShards(t *testing.T) {
 		}
 	}
 	// a token for a read is no good for a delete
-	if code, _, _ := r.do("DELETE", "/v1/stores/main/objects/k", map[string]string{"Authorization": "Bearer " + tok, "X-Cinim-Shard": "001"}, nil); code != 401 {
+	if code, _, _ := r.do("DELETE", "/v1/stores/main/objects/k", map[string]string{"Authorization": "Bearer " + tok, "X-Blobgate-Tenant": "001"}, nil); code != 401 {
 		t.Error("a read token deleted")
 	}
 	// the same key of shard 002 is another object
 	t2 := "/v1/stores/main/objects/k"
-	h := map[string]string{"Authorization": "Bearer " + auth.SignTarget("the-secret-of-shard-002-go-test", "002", "GET", t2, time.Now().Unix()), "X-Cinim-Shard": "002", "Range": "bytes=0-1"}
+	h := map[string]string{"Authorization": "Bearer " + auth.SignTarget("the-secret-of-shard-002-go-test", "002", "GET", t2, time.Now().Unix()), "X-Blobgate-Tenant": "002", "Range": "bytes=0-1"}
 	if code, _, _ := r.do("GET", t2, h, nil); code != 404 {
 		t.Errorf("shard 002 sees shard 001's object: %d", code)
 	}
@@ -558,7 +556,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	// what the server does answer, as (method, template of the path): the concrete requests below are made from the templates
 	impl := []string{
 		"GET /healthz", "GET /readyz", "GET /metrics", "GET /v1/openapi.yaml", "GET /v1/stores",
-		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
+		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "HEAD /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
 		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default", "POST /v1/admin/stores/{name}:reconcile",
 	}
 	for _, o := range impl {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zystem/blobgate/internal/api"
+	"github.com/zystem/blobgate/internal/auth"
 	"github.com/zystem/blobgate/internal/backup"
 	"github.com/zystem/blobgate/internal/db"
 	"github.com/zystem/blobgate/internal/envfile"
@@ -24,6 +25,7 @@ import (
 	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/seal"
+	"github.com/zystem/blobgate/internal/space"
 	"github.com/zystem/blobgate/internal/store"
 	"github.com/zystem/blobgate/internal/tlsutil"
 )
@@ -46,7 +48,7 @@ func secretEnv(name string) string {
 }
 
 func envInt(name string, def int64) int64 {
-	if v := os.Getenv(name); v != "" {
+	if v := envfile.Lookup(name); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 0 {
 			fatal(name + " is not a number")
@@ -78,53 +80,59 @@ func main() {
 		}
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	url := os.Getenv("CINIM_RQLITE_URL")
+	url := envfile.Lookup("BLOBGATE_RQLITE_URL")
 	if url == "" {
-		fatal("CINIM_RQLITE_URL is not set")
+		fatal("BLOBGATE_RQLITE_URL is not set")
 	}
 	secrets := map[string]string{}
-	for _, pair := range strings.Split(secretEnv("CINIM_STORAGE_SHARDS"), ";") {
+	for _, pair := range strings.Split(secretEnv("BLOBGATE_TENANTS"), ";") {
 		if strings.TrimSpace(pair) == "" {
 			continue
 		}
 		k, v, ok := strings.Cut(pair, "=")
 		if !ok || strings.TrimSpace(k) == "" {
-			fatal("CINIM_STORAGE_SHARDS is <shard>=<secret>;<shard>=<secret>")
+			fatal("BLOBGATE_TENANTS is <tenant>=<secret>;<tenant>=<secret>")
 		}
 		secrets[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
-	if t := secretEnv("CINIM_STORAGE_TOKEN"); len(secrets) == 0 && t != "" {
-		shard := os.Getenv("CINIM_SHARD")
+	if t := secretEnv("BLOBGATE_TOKEN"); len(secrets) == 0 && t != "" {
+		shard := envfile.Lookup("BLOBGATE_TENANT")
 		if shard == "" {
-			shard = "001"
+			shard = "default"
+			if os.Getenv("BLOBGATE_TOKEN") == "" {
+				shard = "001" // the old name of the setting (CINIM_STORAGE_TOKEN) served the shard 001 when none was named
+			}
 		}
 		secrets[shard] = t
 	}
 	if len(secrets) == 0 {
-		fatal("no shard is served: set CINIM_STORAGE_SHARDS or CINIM_STORAGE_TOKEN")
+		fatal("no tenant is served: set BLOBGATE_TENANTS or BLOBGATE_TOKEN")
 	}
 	for shard, sec := range secrets {
-		if shard == "" || strings.Trim(shard, "0123456789") != "" {
-			fatal("a shard is made of digits only (SHD-001): " + shard)
+		if !auth.ValidTenant(shard) {
+			fatal("a tenant is 1..64 of lowercase letters, digits, - and _: " + shard)
 		}
 		if len(sec) < 16 {
-			fatal("the secret of shard " + shard + " is shorter than 16 characters")
+			fatal("the secret of tenant " + shard + " is shorter than 16 characters")
 		}
 	}
-	admin := secretEnv("CINIM_STORAGE_ADMIN_TOKEN")
+	admin := secretEnv("BLOBGATE_ADMIN_TOKEN")
 	if len(admin) < 16 {
-		fatal("CINIM_STORAGE_ADMIN_TOKEN is shorter than 16 characters")
+		fatal("BLOBGATE_ADMIN_TOKEN is shorter than 16 characters")
 	}
-	sealText := secretEnv("CINIM_STORAGE_SEAL_KEY")
+	sealText := secretEnv("BLOBGATE_SEAL_KEY")
 	if len(sealText) < 16 {
-		fatal("CINIM_STORAGE_SEAL_KEY is shorter than 16 characters")
+		fatal("BLOBGATE_SEAL_KEY is shorter than 16 characters")
 	}
 
+	if h := envfile.Lookup("BLOBGATE_FULL_HINT"); h != "" {
+		space.Hint = h
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	c := rq.New(url)
-	// a database that is new is filled from the newest backup, when the module is told to (CINIM_STORAGE_RESTORE_ON_EMPTY=1), before it makes its own tables
-	if os.Getenv("CINIM_STORAGE_RESTORE_ON_EMPTY") == "1" {
+	// a database that is new is filled from the newest backup, when the module is told to (BLOBGATE_RESTORE_ON_EMPTY=1), before it makes its own tables
+	if envfile.Lookup("BLOBGATE_RESTORE_ON_EMPTY") == "1" {
 		restoreIfEmpty(ctx, url, log)
 	}
 	// the tables: the database may come up after the module does (two minutes)
@@ -139,38 +147,38 @@ func main() {
 	reg := store.NewRegistry(c, seal.Key(sealText))
 	metrics.RegisterDB(c, 15*time.Second)
 	sec := func(name string, def int64) time.Duration { return time.Duration(envInt(name, def)) * time.Second }
-	srv := api.New(api.Config{ShardSecrets: secrets, AdminToken: admin, Reserve: envInt("CINIM_STORAGE_RESERVE_BYTES", 0),
-		MaxReads: int(envInt("CINIM_STORAGE_THREADS", 0)), UploadTTL: sec("CINIM_STORAGE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
+	srv := api.New(api.Config{ShardSecrets: secrets, AdminToken: admin, Reserve: envInt("BLOBGATE_RESERVE_BYTES", 0), MaxObject: envInt("BLOBGATE_MAX_OBJECT_BYTES", 0),
+		MaxReads: int(envInt("BLOBGATE_THREADS", 0)), UploadTTL: sec("BLOBGATE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
 	host, _ := os.Hostname()
-	worker := maint.New(maint.Config{HolderID: fmt.Sprintf("%s-%d", host, os.Getpid()), RepairEvery: sec("CINIM_STORAGE_REPAIR_SECONDS", 60), LeaseFor: sec("CINIM_STORAGE_LEASE_SECONDS", 120), CheckEvery: sec("CINIM_STORAGE_CHECK_SECONDS", 600),
-		RetryBase: sec("CINIM_STORAGE_REPAIR_RETRY_SECONDS", 30), UploadTTL: sec("CINIM_STORAGE_UPLOAD_TTL_SECONDS", 24*3600), Deep: envInt("CINIM_STORAGE_DEEP_CHECK", 0) == 1,
-		DeepBytesPS: envInt("CINIM_STORAGE_DEEP_CHECK_BYTES_PER_SECOND", 0), Log: log}, c, reg)
+	worker := maint.New(maint.Config{HolderID: fmt.Sprintf("%s-%d", host, os.Getpid()), RepairEvery: sec("BLOBGATE_REPAIR_SECONDS", 60), LeaseFor: sec("BLOBGATE_LEASE_SECONDS", 120), CheckEvery: sec("BLOBGATE_CHECK_SECONDS", 600),
+		RetryBase: sec("BLOBGATE_REPAIR_RETRY_SECONDS", 30), UploadTTL: sec("BLOBGATE_UPLOAD_TTL_SECONDS", 24*3600), Deep: envInt("BLOBGATE_DEEP_CHECK", 0) == 1,
+		DeepBytesPS: envInt("BLOBGATE_DEEP_CHECK_BYTES_PER_SECOND", 0), Log: log}, c, reg)
 	var bg sync.WaitGroup
 	bg.Add(1)
 	go func() { defer bg.Done(); worker.Run(ctx) }()
-	if every := sec("CINIM_STORAGE_BACKUP_SECONDS", 0); every > 0 {
+	if every := sec("BLOBGATE_BACKUP_SECONDS", 0); every > 0 {
 		bg.Add(1)
 		go func() { defer bg.Done(); backupLoop(ctx, worker, url, every, log) }()
 	}
 
-	port := envInt("CINIM_STORAGE_PORT", 18090)
-	shimPort := envInt("CINIM_STORAGE_SHIM_PORT", 18091)
+	port := envInt("BLOBGATE_PORT", 18090)
+	shimPort := envInt("BLOBGATE_SHIM_PORT", 18091)
 	servers := []*http.Server{{Addr: fmt.Sprintf(":%d", port), Handler: srv.Handler(), ReadHeaderTimeout: 30 * time.Second}}
 	if shimPort > 0 {
 		// its own pool and socket timeouts (30 s), so that step code cannot take what the core's calls need
 		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", shimPort), Handler: srv.ShimHandler(), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second})
 	}
 	// the metrics on a port of their own, with no token, for a scraper inside the cluster (off by default; /metrics on the main port wants the admin token)
-	if mp := envInt("CINIM_STORAGE_METRICS_PORT", 0); mp > 0 {
+	if mp := envInt("BLOBGATE_METRICS_PORT", 0); mp > 0 {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", metrics.Handler())
 		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", mp), Handler: mux, ReadHeaderTimeout: 10 * time.Second})
 	}
 	// TLS on every port when a certificate is given (TLS 1.2 or later; the certificate is read again when its files change)
 	tlsOn := false
-	if cf, kf := os.Getenv("CINIM_STORAGE_TLS_CERT_FILE"), os.Getenv("CINIM_STORAGE_TLS_KEY_FILE"); cf != "" || kf != "" {
+	if cf, kf := envfile.Lookup("BLOBGATE_TLS_CERT_FILE"), envfile.Lookup("BLOBGATE_TLS_KEY_FILE"); cf != "" || kf != "" {
 		if cf == "" || kf == "" {
-			fatal("CINIM_STORAGE_TLS_CERT_FILE and CINIM_STORAGE_TLS_KEY_FILE are set together")
+			fatal("BLOBGATE_TLS_CERT_FILE and BLOBGATE_TLS_KEY_FILE are set together")
 		}
 		cfg, err := tlsutil.Config(cf, kf)
 		if err != nil {
@@ -195,7 +203,7 @@ func main() {
 	for k := range secrets {
 		keys = append(keys, k)
 	}
-	fmt.Println("storage: blobgate", version, "serving shards", strings.Join(keys, ","), "on port", port)
+	fmt.Println("blobgate", version, "serving tenants", strings.Join(keys, ","), "on port", port)
 	select {
 	case <-ctx.Done():
 	case err := <-errc:
@@ -216,7 +224,7 @@ func main() {
 func restoreIfEmpty(ctx context.Context, url string, log *slog.Logger) {
 	cfg, err := backup.FromEnv(url)
 	if err != nil {
-		fatal("CINIM_STORAGE_RESTORE_ON_EMPTY is set and the backups are not: " + err.Error())
+		fatal("BLOBGATE_RESTORE_ON_EMPTY is set and the backups are not: " + err.Error())
 	}
 	var empty bool
 	for tries := 0; ; tries++ {
@@ -231,7 +239,7 @@ func restoreIfEmpty(ctx context.Context, url string, log *slog.Logger) {
 	if !empty {
 		return
 	}
-	m, err := backup.RestoreWith(ctx, cfg, backup.Options{Fallback: os.Getenv("CINIM_STORAGE_RESTORE_FALLBACK") == "1"})
+	m, err := backup.RestoreWith(ctx, cfg, backup.Options{Fallback: envfile.Lookup("BLOBGATE_RESTORE_FALLBACK") == "1"})
 	switch {
 	case err == nil:
 		log.Info("the database was empty and was restored", "backup", m.ID, "created", m.Created, "bytes", m.RawSize)
@@ -247,7 +255,7 @@ func restoreIfEmpty(ctx context.Context, url string, log *slog.Logger) {
 func backupLoop(ctx context.Context, w *maint.Worker, url string, every time.Duration, log *slog.Logger) {
 	cfg, err := backup.FromEnv(url)
 	if err != nil {
-		log.Error("CINIM_STORAGE_BACKUP_SECONDS is set and the backups are not", "error", err.Error())
+		log.Error("BLOBGATE_BACKUP_SECONDS is set and the backups are not", "error", err.Error())
 		return
 	}
 	t := time.NewTicker(every)

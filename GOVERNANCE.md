@@ -38,7 +38,7 @@ The project must be able to create and close issues, accept changes and release 
 | read private vulnerability reports | admin or security manager | the owner only; see [SECURITY.md](SECURITY.md) for what is done when the owner is away |
 
 Nothing else is needed: the CI keeps no secret that a person could lose (the signing is keyless, the token of a run is made by GitHub for that run), the project has no domain name or server of its own, and the
-licence (MIT) lets anyone who has the repository carry on. The keys and secrets of a deployment (the shard secrets, the seal key, the key of the backups) are the operator's, never the project's.
+licence (MIT) lets anyone who has the repository carry on. The keys and secrets of a deployment (the tenant secrets, the seal key, the key of the backups) are the operator's, never the project's.
 
 If the **owner** is the one who cannot go on, the second maintainer carries on with write access as above. Taking over the settings, the packages and the badge entry needs the owner's account to be handed over or the
 repository to be transferred (Settings, Transfer ownership); until then those three stay as they are and the releases go on.

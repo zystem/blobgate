@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zystem/blobgate/internal/auth"
 	"github.com/zystem/blobgate/internal/layout"
@@ -54,7 +55,7 @@ func (s *Server) listStores(w http.ResponseWriter, r *http.Request) {
 
 // authCore checks the v1 token of a call of the core.
 func (s *Server) authCore(r *http.Request, _ string) bool {
-	shard := r.Header.Get("X-Cinim-Shard")
+	shard := tenantOf(r)
 	secret, ok := s.cfg.ShardSecrets[shard]
 	if !validShard(shard) || !ok {
 		return false
@@ -67,7 +68,7 @@ func (s *Server) coreObject(w http.ResponseWriter, r *http.Request) {
 		problem(w, 401, "unauthorized", "the token is wrong, expired, or not for this call")
 		return
 	}
-	shard := r.Header.Get("X-Cinim-Shard")
+	shard := tenantOf(r)
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/stores/")
 	slash := strings.IndexByte(rest, '/')
 	if slash < 1 || !strings.HasPrefix(rest[slash+1:], "objects/") {
@@ -106,6 +107,8 @@ func (s *Server) object(w http.ResponseWriter, r *http.Request, shard, st, key s
 		default:
 			problem(w, 400, "invalid_request", "POST takes ?uploads or ?upload={id}")
 		}
+	case http.MethodHead:
+		s.head(w, r, m, full)
 	case http.MethodGet:
 		switch {
 		case has(r, "parts") && has(r, "upload"):
@@ -122,7 +125,7 @@ func (s *Server) object(w http.ResponseWriter, r *http.Request, shard, st, key s
 			s.deleteObject(w, r, m, full)
 		}
 	default:
-		problem(w, 405, "method_not_allowed", "PUT, GET, POST or DELETE")
+		problem(w, 405, "method_not_allowed", "PUT, GET, HEAD, POST or DELETE")
 	}
 }
 
@@ -184,9 +187,11 @@ func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string
 			return written{}, &herr{503, "unavailable", "the body did not come whole: " + err.Error()}
 		}
 		sum := sha256.Sum256(buf)
-		if hex.EncodeToString(sum[:]) != given {
+		plain := hex.EncodeToString(sum[:])
+		if given != "" && plain != given {
 			return written{}, &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
 		}
+		given = plain
 		sealed, err := m.Enc.Seal(full, gen, n, buf)
 		if err != nil {
 			return written{}, &herr{500, "encryption_failed", err.Error()}
@@ -203,7 +208,7 @@ func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string
 		deleteBlock(context.WithoutCancel(ctx), m, rel) // what a node that did take it has kept
 		return written{}, putFailure(err)
 	}
-	if res.SHA256 != given {
+	if given != "" && res.SHA256 != given {
 		deleteBlock(context.WithoutCancel(ctx), m, rel)
 		return written{}, &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
 	}
@@ -236,14 +241,93 @@ type objectRow struct {
 	blockSize  int64
 	blocks     []string // SHA-256 of the blocks as stored
 	enc        uint32
+	written    int64 // when it was fixed, unix seconds
+	meta       objMeta
+}
+
+// objMeta is what a writer says about an object besides its bytes: the type of its contents and some pairs of text. It is kept and given back; the module does not look at it.
+type objMeta struct {
+	ContentType string            `json:"content_type,omitempty"`
+	Pairs       map[string]string `json:"pairs,omitempty"`
+}
+
+const (
+	metaHeader  = "X-Blobgate-Meta-"
+	maxMetaKeys = 32
+	maxMetaSize = 8 << 10
+)
+
+// readMeta reads the Content-Type and the `X-Blobgate-Meta-<name>` headers of a write; a name is 1..64 of letters, digits, `-` and `_`, a value up to 1024 printable characters, at most 32 pairs and 8 KiB in all.
+func readMeta(r *http.Request) (objMeta, *herr) {
+	om := objMeta{ContentType: r.Header.Get("Content-Type")}
+	if len(om.ContentType) > 255 || strings.ContainsAny(om.ContentType, "\r\n") {
+		return om, &herr{400, "invalid_metadata", "Content-Type is at most 255 characters"}
+	}
+	total := 0
+	for name, vals := range r.Header {
+		rest, ok := strings.CutPrefix(http.CanonicalHeaderKey(name), http.CanonicalHeaderKey(metaHeader))
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(rest)
+		v := strings.Join(vals, ",")
+		if len(key) < 1 || len(key) > 64 || len(v) > 1024 {
+			return om, &herr{400, "invalid_metadata", "a metadata name is 1..64 characters and a value at most 1024"}
+		}
+		for i := 0; i < len(key); i++ {
+			c := key[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return om, &herr{400, "invalid_metadata", "a metadata name is letters, digits, - and _"}
+			}
+		}
+		for i := 0; i < len(v); i++ {
+			if v[i] < ' ' || v[i] == 0x7f {
+				return om, &herr{400, "invalid_metadata", "a metadata value has no control character"}
+			}
+		}
+		if om.Pairs == nil {
+			om.Pairs = map[string]string{}
+		}
+		om.Pairs[key] = v
+		total += len(key) + len(v)
+		if len(om.Pairs) > maxMetaKeys || total > maxMetaSize {
+			return om, &herr{400, "invalid_metadata", "at most 32 metadata pairs and 8 KiB in all"}
+		}
+	}
+	return om, nil
+}
+
+// etag names a version of an object: what a reader can send back to ask whether it changed. It is made of the digests of the blocks as stored, so every write is a new version, and a sealed object is a new
+// version at every write even when the bytes are the same.
+func (o *objectRow) etag() string {
+	h := sha256.Sum256([]byte(strings.Join(o.blocks, "\n") + "|" + strconv.FormatInt(o.size, 10)))
+	return `"` + hex.EncodeToString(h[:16]) + `"`
+}
+
+// setHeaders puts what is known of the object in the headers of an answer.
+func (o *objectRow) setHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("ETag", o.etag())
+	h.Set("Last-Modified", time.Unix(o.written, 0).UTC().Format(http.TimeFormat))
+	h.Set("Accept-Ranges", "bytes")
+	ct := o.meta.ContentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	h.Set("Content-Type", ct)
+	for k, v := range o.meta.Pairs {
+		h.Set(metaHeader+k, v)
+	}
 }
 
 func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error) {
-	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc, written_at, content_type, meta FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: keyID(rq.Int(rows[0][4]))}
+	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: keyID(rq.Int(rows[0][4])), written: rq.Int(rows[0][5])}
+	o.meta.ContentType = rq.Str(rows[0][6])
+	_ = json.Unmarshal([]byte(rq.Str(rows[0][7])), &o.meta.Pairs)
 	if err := json.Unmarshal([]byte(rq.Str(rows[0][3])), &o.blocks); err != nil {
 		return nil, fmt.Errorf("the row of %s is damaged: %w", full, err)
 	}
@@ -265,18 +349,23 @@ func (s *Server) purgeTasks(m *store.Mirror, full, except string) []rq.Stmt {
 
 // commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
 // at once; what a node could not do stays in the queue.
-func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string, enc uint32) error {
+func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string, enc uint32, om objMeta) error {
 	old, err := s.getRow(ctx, m.Name, full)
 	if err != nil {
 		return err
 	}
 	bj, _ := json.Marshal(blocks)
+	pj, _ := json.Marshal(om.Pairs)
+	if om.Pairs == nil {
+		pj = []byte("{}")
+	}
 	s.at("commit:before")
 	stmts := s.purgeTasks(m, full, gen)
 	stmts = append(stmts,
-		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "+
-			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks, enc = excluded.enc",
-			m.Name, full, size, s.now(), gen, blockSize, string(bj), enc),
+		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks, enc = excluded.enc, "+
+			"content_type = excluded.content_type, meta = excluded.meta",
+			m.Name, full, size, s.now(), gen, blockSize, string(bj), enc, om.ContentType, string(pj)),
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
@@ -309,45 +398,142 @@ func (s *Server) purge(ctx context.Context, m *store.Mirror, full, gen string) {
 	s.queue(ctx, m.Name, layout.DirKey(full, gen), "purge", m.DeleteDir(ctx, layout.BlockDir(full, gen)))
 }
 
+// precondition checks If-Match and If-None-Match of a write or a delete against the object as it is now. It is a check made before the write, not part of it: two writers at the same moment can both pass.
+func (s *Server) precondition(ctx context.Context, w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) bool {
+	im, inm := r.Header.Get("If-Match"), r.Header.Get("If-None-Match")
+	if im == "" && inm == "" {
+		return true
+	}
+	o, err := s.getRow(ctx, m.Name, full)
+	if err != nil {
+		fail(w, err)
+		return false
+	}
+	if inm == "*" && o != nil || im != "" && im != "*" && (o == nil || !etagMatches(im, o.etag())) || im == "*" && o == nil {
+		problem(w, 412, "precondition_failed", "the object is not as If-Match or If-None-Match says")
+		return false
+	}
+	if inm != "" && inm != "*" && o != nil && etagMatches(inm, o.etag()) {
+		problem(w, 412, "precondition_failed", "the object is the version If-None-Match names")
+		return false
+	}
+	return true
+}
+
+// etagMatches says whether a list of entity tags (as in If-Match) holds the tag.
+func etagMatches(list, tag string) bool {
+	for _, t := range strings.Split(list, ",") {
+		if strings.TrimPrefix(strings.TrimSpace(t), "W/") == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// putObject writes an object. A body of known length up to one block is streamed to the nodes as it comes; a longer one, or one of unknown length (chunked), is cut into blocks of 8 MiB by the module,
+// which holds one block at a time. X-Content-SHA256, when sent, is the digest of the whole body and is checked; when not, the module makes it.
 func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
 	ctx := r.Context()
 	given := strings.ToLower(r.Header.Get("X-Content-SHA256"))
-	if !validSHA(given) {
-		problem(w, 400, "sha256_required", "X-Content-SHA256 is the hex digest of the body, sent with the request")
+	if given != "" && !validSHA(given) {
+		problem(w, 400, "invalid_sha256", "X-Content-SHA256 is the hex digest of the body")
 		return
 	}
-	size := r.ContentLength
-	if size > BlockSize {
-		problem(w, 413, "too_large", fmt.Sprintf("an object in one call, or a part, is at most %d bytes; use a multipart upload", BlockSize))
+	om, he := readMeta(r)
+	if he != nil {
+		he.write(w)
 		return
 	}
-	if size <= 0 {
-		problem(w, 400, "empty_body", "an object is at least one byte")
+	size := r.ContentLength // -1: not known
+	if s.cfg.MaxObject > 0 && size > s.cfg.MaxObject {
+		problem(w, 413, "too_large", fmt.Sprintf("an object is at most %d bytes", s.cfg.MaxObject))
 		return
 	}
-	if e := s.noRoom(ctx, m, size); e != nil {
+	if !s.precondition(ctx, w, r, m, full) {
+		return
+	}
+	need := size
+	if need < 0 {
+		need = BlockSize
+	}
+	if e := s.noRoom(ctx, m, need); e != nil {
 		e.write(w)
 		return
 	}
 	gen := newID()
-	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_uploads (store, key, upload, created_at) VALUES (?, ?, ?, ?)", m.Name, full, gen, s.now())); err != nil {
+	pj, _ := json.Marshal(om.Pairs)
+	if om.Pairs == nil {
+		pj = []byte("{}")
+	}
+	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_uploads (store, key, upload, created_at, content_type, meta) VALUES (?, ?, ?, ?, ?, ?)", m.Name, full, gen, s.now(), om.ContentType, string(pj))); err != nil {
 		fail(w, err)
 		return
 	}
 	s.at("put:after-uploads-row")
-	w0, e := s.writeBlock(ctx, m, full, gen, 0, size, given, r.Body)
-	if e != nil {
+	fail2 := func(e *herr) {
 		_, _ = s.DB.Exec(context.WithoutCancel(ctx), false, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 		e.write(w)
-		return
+	}
+	var total int64
+	var blocks []string
+	var enc uint32
+	switch {
+	case size == 0:
+		// an empty object has no block: the row says so
+	case size > 0 && size <= BlockSize:
+		w0, e := s.writeBlock(ctx, m, full, gen, 0, size, given, r.Body)
+		if e != nil {
+			fail2(e)
+			return
+		}
+		total, blocks, enc = size, []string{w0.stored}, w0.enc
+	default:
+		buf := make([]byte, BlockSize)
+		whole := sha256.New()
+		for n := 0; ; n++ {
+			k, err := io.ReadFull(r.Body, buf)
+			if k > 0 {
+				total += int64(k)
+				if s.cfg.MaxObject > 0 && total > s.cfg.MaxObject {
+					s.purge(ctx, m, full, gen)
+					fail2(&herr{413, "too_large", fmt.Sprintf("an object is at most %d bytes", s.cfg.MaxObject)})
+					return
+				}
+				whole.Write(buf[:k])
+				sum := sha256.Sum256(buf[:k])
+				w0, e := s.writeBlock(ctx, m, full, gen, n, int64(k), hex.EncodeToString(sum[:]), bytes.NewReader(buf[:k]))
+				if e != nil {
+					fail2(e)
+					return
+				}
+				blocks, enc = append(blocks, w0.stored), w0.enc
+			}
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			if err != nil {
+				s.purge(ctx, m, full, gen)
+				fail2(&herr{503, "unavailable", "the body did not come whole: " + err.Error()})
+				return
+			}
+		}
+		if given != "" && hex.EncodeToString(whole.Sum(nil)) != given {
+			s.purge(ctx, m, full, gen)
+			fail2(&herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"})
+			return
+		}
 	}
 	s.at("put:after-block")
-	if err := s.commit(ctx, m, full, gen, size, size, []string{w0.stored}, w0.enc); err != nil {
+	blockSize := int64(BlockSize)
+	if size > 0 && size <= BlockSize {
+		blockSize = size
+	}
+	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, enc, om); err != nil {
 		s.purge(ctx, m, full, gen)
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"size": size})
+	writeJSON(w, 200, map[string]any{"size": total})
 }
 
 func validUpload(id string) bool {
@@ -375,8 +561,17 @@ func (s *Server) beginUpload(w http.ResponseWriter, r *http.Request, m *store.Mi
 		e.write(w)
 		return
 	}
+	om, he := readMeta(r)
+	if he != nil {
+		he.write(w)
+		return
+	}
+	pj, _ := json.Marshal(om.Pairs)
+	if om.Pairs == nil {
+		pj = []byte("{}")
+	}
 	id := newID()
-	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_uploads (store, key, upload, created_at) VALUES (?, ?, ?, ?)", m.Name, full, id, s.now())); err != nil {
+	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_uploads (store, key, upload, created_at, content_type, meta) VALUES (?, ?, ?, ?, ?, ?)", m.Name, full, id, s.now(), om.ContentType, string(pj))); err != nil {
 		fail(w, err)
 		return
 	}
@@ -562,7 +757,12 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		total += p.size
 	}
 	s.at("complete:before-commit")
-	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, enc); err != nil {
+	var om objMeta
+	if rows, err := s.DB.Query(ctx, rq.S("SELECT content_type, meta FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload)); err == nil && len(rows) == 1 {
+		om.ContentType = rq.Str(rows[0][0])
+		_ = json.Unmarshal([]byte(rq.Str(rows[0][1])), &om.Pairs)
+	}
+	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, enc, om); err != nil {
 		fail(w, err)
 		return
 	}
@@ -586,6 +786,9 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request, m *store.Mirror, 
 
 func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
 	ctx := r.Context()
+	if !s.precondition(ctx, w, r, m, full) {
+		return
+	}
 	old, err := s.getRow(ctx, m.Name, full)
 	if err != nil {
 		fail(w, err)
@@ -615,38 +818,63 @@ func (s *Server) stat(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 		problem(w, 404, "no_such_object", "no such object")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"size": o.size})
+	writeJSON(w, 200, map[string]any{"size": o.size, "etag": o.etag(), "content_type": o.meta.ContentType, "modified": o.written, "meta": o.meta.Pairs})
 }
 
-// parseRange reads `bytes=a-b` with both ends.
+// parseRange reads one range of a Range header: `bytes=a-b`, `bytes=a-` (to the end) and `bytes=-n` (the last n bytes). ok is false for anything else, a list of ranges included. For a suffix, a is -1 and b is n.
 func parseRange(h string) (a, b int64, ok bool) {
-	if !strings.HasPrefix(h, "bytes=") {
+	spec, found := strings.CutPrefix(h, "bytes=")
+	if !found || strings.Contains(spec, ",") {
 		return 0, 0, false
 	}
-	ends := strings.Split(h[6:], "-")
-	if len(ends) != 2 {
+	lo, hi, found := strings.Cut(spec, "-")
+	if !found {
 		return 0, 0, false
 	}
-	var err1, err2 error
-	a, err1 = strconv.ParseInt(ends[0], 10, 64)
-	b, err2 = strconv.ParseInt(ends[1], 10, 64)
-	return a, b, err1 == nil && err2 == nil
+	var err error
+	switch {
+	case lo == "" && hi != "": // the last n bytes
+		b, err = strconv.ParseInt(hi, 10, 64)
+		return -1, b, err == nil && b > 0
+	case lo != "" && hi == "": // from a to the end
+		a, err = strconv.ParseInt(lo, 10, 64)
+		return a, -1, err == nil && a >= 0
+	case lo != "" && hi != "":
+		a, err = strconv.ParseInt(lo, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		b, err = strconv.ParseInt(hi, 10, 64)
+		return a, b, err == nil && a >= 0 && b >= a
+	}
+	return 0, 0, false
 }
 
+// notModified answers If-None-Match / If-Match of a read: it returns true when the answer has been given (304 or 412).
+func notModified(w http.ResponseWriter, r *http.Request, o *objectRow) bool {
+	if im := r.Header.Get("If-Match"); im != "" && im != "*" && !etagMatches(im, o.etag()) {
+		problem(w, 412, "precondition_failed", "the object is not the version If-Match names")
+		return true
+	}
+	if inm := r.Header.Get("If-None-Match"); inm != "" && (inm == "*" || etagMatches(inm, o.etag())) {
+		o.setHeaders(w)
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	return false
+}
+
+// read answers a GET: the whole object, or the range named by Range (206). The bytes are streamed, one block at a time.
 func (s *Server) read(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
 	h := r.Header.Get("Range")
-	if !strings.HasPrefix(h, "bytes=") {
-		problem(w, 400, "range_required", "a read names a range: Range: bytes=a-b")
-		return
-	}
-	a, b, ok := parseRange(h)
-	if !ok {
-		problem(w, 400, "invalid_range", "Range: bytes=a-b, with both ends")
-		return
-	}
-	if a < 0 || b < a || b-a+1 > MaxRead {
-		problem(w, 400, "invalid_range", fmt.Sprintf("a read is 1 byte to %d MiB", MaxRead>>20))
-		return
+	var a, b int64
+	ranged := h != ""
+	if ranged {
+		var ok bool
+		if a, b, ok = parseRange(h); !ok {
+			problem(w, 400, "invalid_range", "Range: bytes=a-b, bytes=a- or bytes=-n (one range)")
+			return
+		}
 	}
 	o, err := s.getRow(r.Context(), m.Name, full)
 	if err != nil {
@@ -657,17 +885,55 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 		problem(w, 404, "no_such_object", "no such object")
 		return
 	}
-	s.streamRange(w, r, m, full, o, a, b)
-}
-
-// streamRange sends bytes a..b of the object (b is cut at its end). A block is read whole and checked against its digest before a byte of it is sent; the first block is read before the
-// status is written, so that an object that cannot be read is an error and not a broken answer.
-func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string, o *objectRow, a, b int64) {
-	if a >= o.size {
-		problem(w, 400, "invalid_range", fmt.Sprintf("the object is %d bytes", o.size))
+	if notModified(w, r, o) {
 		return
 	}
-	b = min(b, o.size-1)
+	if !ranged {
+		if o.size == 0 {
+			o.setHeaders(w)
+			w.Header().Set("Content-Length", "0")
+			w.WriteHeader(200)
+			return
+		}
+		s.streamRange(w, r, m, full, o, 0, o.size-1, false)
+		return
+	}
+	switch {
+	case a < 0: // the last b bytes
+		a, b = max(o.size-b, 0), o.size-1
+	case b < 0: // to the end
+		b = o.size - 1
+	}
+	if o.size == 0 || a >= o.size {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", o.size))
+		problem(w, 416, "range_not_satisfiable", fmt.Sprintf("the object is %d bytes", o.size))
+		return
+	}
+	s.streamRange(w, r, m, full, o, a, min(b, o.size-1), true)
+}
+
+// head answers a HEAD: what a GET would say, with no body.
+func (s *Server) head(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
+	o, err := s.getRow(r.Context(), m.Name, full)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if o == nil {
+		w.WriteHeader(404)
+		return
+	}
+	if notModified(w, r, o) {
+		return
+	}
+	o.setHeaders(w)
+	w.Header().Set("Content-Length", strconv.FormatInt(o.size, 10))
+	w.WriteHeader(200)
+}
+
+// streamRange sends bytes a..b of the object (b is within it). A block is read whole and checked against its digest before a byte of it is sent; the first block is read before the status is written, so
+// that an object that cannot be read is an error and not a broken answer. partial says whether the answer is 206 (a range) or 200 (the whole).
+func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string, o *objectRow, a, b int64, partial bool) {
 	first, last := int(a/o.blockSize), int(b/o.blockSize)
 	readBlock := func(i int) ([]byte, error) {
 		select {
@@ -695,9 +961,14 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 		fail(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
+	o.setHeaders(w)
 	w.Header().Set("Content-Length", strconv.FormatInt(b-a+1, 10))
-	w.WriteHeader(206)
+	if partial {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", a, b, o.size))
+		w.WriteHeader(206)
+	} else {
+		w.WriteHeader(200)
+	}
 	for i := first; ; i++ {
 		if _, err := w.Write(slice(i, data)); err != nil || i == last {
 			return

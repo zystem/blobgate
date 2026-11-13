@@ -52,3 +52,28 @@ func TestGet(t *testing.T) {
 		t.Fatal("a file over 1 MiB")
 	}
 }
+
+// The settings keep their old names: CINIM_STORAGE_<X> still works for BLOBGATE_<X>, the shards are the tenants, and the new name wins.
+func TestLegacyNames(t *testing.T) {
+	for new, old := range map[string]string{"BLOBGATE_PORT": "CINIM_STORAGE_PORT", "BLOBGATE_TENANTS": "CINIM_STORAGE_SHARDS", "BLOBGATE_TENANT": "CINIM_SHARD", "BLOBGATE_RQLITE_URL": "CINIM_RQLITE_URL", "BLOBGATE_SEAL_KEY": "CINIM_STORAGE_SEAL_KEY"} {
+		t.Setenv(new, "")
+		t.Setenv(old, "old-"+old)
+		if got := Lookup(new); got != "old-"+old {
+			t.Errorf("%s: %q", new, got)
+		}
+		t.Setenv(new, "new")
+		if got := Lookup(new); got != "new" {
+			t.Errorf("the new name does not win for %s: %q", new, got)
+		}
+	}
+	if Lookup("OTHER_NAME") != "" || len(legacyNames("OTHER")) != 0 {
+		t.Fatal("a name that is not BLOBGATE_ has no legacy")
+	}
+	// a secret as a file under its old name
+	t.Setenv("BLOBGATE_ADMIN_TOKEN", "")
+	t.Setenv("CINIM_STORAGE_ADMIN_TOKEN", "")
+	t.Setenv("CINIM_STORAGE_ADMIN_TOKEN_FILE", write(t, 0o600, "from-an-old-file\n"))
+	if v, err := Get("BLOBGATE_ADMIN_TOKEN"); err != nil || v != "from-an-old-file" {
+		t.Fatalf("%q %v", v, err)
+	}
+}

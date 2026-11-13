@@ -22,7 +22,7 @@ What the project does about its dependencies, its code, its secrets and its rele
 
 * The repository holds no secret: GitHub secret scanning with push protection is on; the test secrets are fixed fake values. The CI has no long-lived secret (the signing is keyless; the token of a run is made by
   GitHub for that run).
-* A deployment's secrets (the shard secrets, the admin token, the seal key, the key of the backups, the passwords of the nodes) are the operator's, can be files, and are never put in a log, a metric or an answer.
+* A deployment's secrets (the tenant secrets, the admin token, the seal key, the key of the backups, the passwords of the nodes) are the operator's, can be files, and are never put in a log, a metric or an answer.
 
 ## Releases
 

@@ -21,10 +21,17 @@ func TestProblem(t *testing.T) {
 		t.Fatal("a write that fits was refused")
 	}
 	why := Problem(Info{Known: true, Free: 512 << 10, Total: 12 << 30}, 83<<20, DefaultReserve, "garage-main")
-	for _, want := range []string{"garage-main", "nearly full", "512.0 KiB free of 12.0 GiB", "83.0 MiB", "256.0 MiB", "cache.retention"} {
+	for _, want := range []string{"garage-main", "nearly full", "512.0 KiB free of 12.0 GiB", "83.0 MiB", "256.0 MiB", "free space in it"} {
 		if !strings.Contains(why, want) {
 			t.Errorf("%q is not in %q", want, why)
 		}
+	}
+	Hint = "delete caches (cache.retention)"
+	defer func() {
+		Hint = "free space in it, delete data that is no longer needed, or give the store a bigger volume"
+	}()
+	if why := Problem(Info{Known: true, Free: 1, Total: 10}, 1, 100, "s"); !strings.Contains(why, "delete caches (cache.retention)") || strings.Contains(why, "free space in it") {
+		t.Fatalf("the hint of the operator is not the text: %s", why)
 	}
 	if Problem(Info{Known: true, Free: -5, Total: 10}, 1, 0, "s") == "" {
 		t.Fatal("a store with no room took a write")

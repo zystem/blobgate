@@ -30,7 +30,7 @@ jobs:
       # the coverage gate is for the program; cmd/bench is a load generator, tested by use and not counted
       - name: "tests, with the real servers (SFTPGo, Garage, a rqlite for the backups) and the program killed with SIGKILL"
         env:
-          CINIM_RQLITE_URL: http://127.0.0.1:4001
+          BLOBGATE_RQLITE_URL: http://127.0.0.1:4001
           BLOBGATE_DOCKER_TESTS: "1"
         run: go test -race -count=1 -coverpkg=./cmd/blobgate,./internal/... -coverprofile=cover.out ./cmd/blobgate ./internal/...
       - name: Statement coverage must stay at 80% or more

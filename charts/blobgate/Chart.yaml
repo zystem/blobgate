@@ -1,6 +1,6 @@
 apiVersion: v2
 name: blobgate
-description: The storage module of CiNim - blocks on any server rclone can talk to, mirrored, checked by SHA-256. A Deployment with no volume; its records are in rqlite.
+description: A blob storage service - blocks on any server rclone can talk to, mirrored, checked by SHA-256, for many tenants. A Deployment with no volume; its records are in rqlite.
 type: application
 # version and appVersion are made from the tag when a release is published (.github/workflows/release.yml); these are what a chart made by hand carries
 version: 0.0.0-dev

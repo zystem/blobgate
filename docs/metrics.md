@@ -1,6 +1,6 @@
 # Metrics reference
 
-Reference page. `GET /metrics` on the main port with the admin token, or on `CINIM_STORAGE_METRICS_PORT` with no token. The labels have few values: the route is one of a fixed list, and no key of an object is ever a label.
+Reference page. `GET /metrics` on the main port with the admin token, or on `BLOBGATE_METRICS_PORT` with no token. The labels have few values: the route is one of a fixed list, and no key of an object is ever a label.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|

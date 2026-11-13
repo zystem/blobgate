@@ -33,11 +33,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default (include "blobgate.fullname" .) .Values.existingSecret -}}
 {{- end -}}
 
-{{/* <shard>=<secret>;<shard>=<secret> */}}
-{{- define "blobgate.shards" -}}
+{{/* the tenants and their secrets: `secrets.tenants`, or `secrets.shards`, the name of the first version */}}
+{{- define "blobgate.tenantMap" -}}
+{{- if .Values.secrets.tenants -}}{{- toJson .Values.secrets.tenants -}}{{- else -}}{{- toJson .Values.secrets.shards -}}{{- end -}}
+{{- end -}}
+
+{{/* <tenant>=<secret>;<tenant>=<secret> */}}
+{{- define "blobgate.tenants" -}}
+{{- $m := include "blobgate.tenantMap" . | fromJson -}}
 {{- $parts := list -}}
-{{- range $shard := (keys .Values.secrets.shards | sortAlpha) -}}
-{{- $parts = append $parts (printf "%s=%s" $shard (index $.Values.secrets.shards $shard)) -}}
+{{- range $t := (keys $m | sortAlpha) -}}
+{{- $parts = append $parts (printf "%s=%s" $t (index $m $t)) -}}
 {{- end -}}
 {{- join ";" $parts -}}
 {{- end -}}

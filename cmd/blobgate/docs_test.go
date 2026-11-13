@@ -34,7 +34,7 @@ func goSources(t *testing.T) string {
 func TestEverySettingMetricAndCommandIsDocumented(t *testing.T) {
 	src := goSources(t)
 	docs := read(t, "../../docs/configuration.md") + read(t, "../../docs/backup.md")
-	for _, name := range regexp.MustCompile(`CINIM_[A-Z_]+`).FindAllString(src, -1) {
+	for _, name := range regexp.MustCompile(`BLOBGATE_[A-Z_]+`).FindAllString(src, -1) {
 		if !strings.Contains(docs, name) {
 			t.Errorf("%s is read by the program and is not in docs/configuration.md or docs/backup.md", name)
 		}

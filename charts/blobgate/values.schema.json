@@ -9,7 +9,8 @@
     "secrets": {
       "type": "object",
       "properties": {
-        "shards": {"type": "object", "propertyNames": {"pattern": "^[0-9]+$"}, "additionalProperties": {"type": "string", "minLength": 16}},
+        "tenants": {"type": "object", "propertyNames": {"pattern": "^[a-z0-9_][a-z0-9_-]{0,63}$"}, "additionalProperties": {"type": "string", "minLength": 16}},
+        "shards": {"type": "object", "propertyNames": {"pattern": "^[a-z0-9_][a-z0-9_-]{0,63}$"}, "additionalProperties": {"type": "string", "minLength": 16}},
         "adminToken": {"type": "string"},
         "sealKey": {"type": "string"}
       }

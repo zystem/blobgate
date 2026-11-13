@@ -14,7 +14,7 @@ tried at once, and the task is taken out of the queue by the node that did it. N
 
 | Step | What is left | Who cleans it |
 |---|---|---|
-| a PUT or an upload has begun (`storage_uploads` row written) | the row | the sweep, after `CINIM_STORAGE_UPLOAD_TTL_SECONDS` (24 h) |
+| a PUT or an upload has begun (`storage_uploads` row written) | the row | the sweep, after `BLOBGATE_UPLOAD_TTL_SECONDS` (24 h) |
 | blocks are being written | partial files under the generation path, on some nodes | the sweep (the upload row is still there) |
 | a block is written, its record in `storage_parts` is not | the block | the sweep |
 | all blocks written, the transaction not yet | the blocks; the old object is untouched and is the object | the sweep |
@@ -28,7 +28,7 @@ the database and writes it.
 Besides the stops at named points, the program as a process is killed with SIGKILL in the middle of a block of 8 MiB, of a new object and of the replacement of one (`TestKillNineInTheMiddleOfAWrite`,
 `cmd/blobgate/process_test.go`, with a real rqlite): after the restart the object that was there is as it was, the one that was not is not, and the blocks the dead writer left (partial files, seen on the
 nodes before the restart) are removed by the sweep. With two replicas, the one that holds the lease is killed and the other takes the lease when it runs out and does the repair that was waiting
-(`TestTheReplicaThatTakesOver`, `CINIM_STORAGE_LEASE_SECONDS`).
+(`TestTheReplicaThatTakesOver`, `BLOBGATE_LEASE_SECONDS`).
 
 ## What a read trusts
 

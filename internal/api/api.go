@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zystem/blobgate/internal/auth"
 	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/space"
@@ -38,6 +39,7 @@ type Config struct {
 	ShardSecrets map[string]string // shard -> the secret its calls are signed with
 	AdminToken   string
 	Reserve      int64         // bytes kept free in a store (0: space.DefaultReserve)
+	MaxObject    int64         // the most bytes an object may hold; 0: no limit besides the room
 	MaxReads     int           // reads of blocks at once (0: 8): each holds one block in memory
 	UploadTTL    time.Duration // an upload older than this is swept (0: 24 h)
 	Now          func() time.Time
@@ -138,16 +140,14 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-func validShard(s string) bool {
-	if len(s) < 1 || len(s) > 16 {
-		return false
+func validShard(s string) bool { return auth.ValidTenant(s) }
+
+// tenantOf is the tenant a call is made for: the header X-Blobgate-Tenant, or X-Cinim-Shard (the name the first version used).
+func tenantOf(r *http.Request) string {
+	if t := r.Header.Get("X-Blobgate-Tenant"); t != "" {
+		return t
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
+	return r.Header.Get("X-Cinim-Shard")
 }
 
 func equal(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }

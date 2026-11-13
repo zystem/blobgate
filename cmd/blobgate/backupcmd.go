@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/zystem/blobgate/internal/envfile"
 	"os"
 	"time"
 
@@ -23,7 +24,7 @@ const backupUsage = `usage:
                                   Run it before the module starts: the module makes its tables when it starts, and
                                   then the database is no longer empty.
 
-The settings are in the environment: CINIM_RQLITE_URL, CINIM_STORAGE_BACKUP_NODES, CINIM_STORAGE_BACKUP_KEY
+The settings are in the environment: BLOBGATE_RQLITE_URL, BLOBGATE_BACKUP_NODES, BLOBGATE_BACKUP_KEY
 (docs/backup.md). The backups do not depend on the database, so a restore needs nothing but these.`
 
 // backupCommand runs the commands that work with the backups of the database; it returns the exit code.
@@ -39,9 +40,9 @@ func backupCommand(name string, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	url := os.Getenv("CINIM_RQLITE_URL")
+	url := envfile.Lookup("BLOBGATE_RQLITE_URL")
 	if url == "" {
-		fmt.Fprintln(os.Stderr, name+": CINIM_RQLITE_URL is not set")
+		fmt.Fprintln(os.Stderr, name+": BLOBGATE_RQLITE_URL is not set")
 		return 2
 	}
 	cfg, err := backup.FromEnv(url)

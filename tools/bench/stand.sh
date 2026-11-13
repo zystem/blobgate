@@ -25,7 +25,7 @@ caddy_node() { # port root withauth
   XDG_DATA_HOME=$B/xdg XDG_CONFIG_HOME=$B/xdgc $CADDY run --config $f --adapter caddyfile > $B/caddy-$1.log 2>&1 &
   pids+=($!)
 }
-ENVV="CINIM_RQLITE_URL=$RQ CINIM_STORAGE_PORT=$MP CINIM_STORAGE_SHIM_PORT=0 CINIM_STORAGE_SHARDS=001=$SECRET CINIM_STORAGE_ADMIN_TOKEN=$ADMIN CINIM_STORAGE_SEAL_KEY=a-seal-key-for-the-bench"
+ENVV="BLOBGATE_RQLITE_URL=$RQ BLOBGATE_PORT=$MP BLOBGATE_SHIM_PORT=0 BLOBGATE_TENANTS=001=$SECRET BLOBGATE_ADMIN_TOKEN=$ADMIN BLOBGATE_SEAL_KEY=a-seal-key-for-the-bench"
 case $KIND in
  nim)
    caddy_node $P1 $B/n1 auth; caddy_node $P2 $B/n2 auth

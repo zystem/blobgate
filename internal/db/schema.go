@@ -37,7 +37,11 @@ var columns = [][3]string{
 	{"storage_objects", "generation", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_objects", "block_size", "INTEGER NOT NULL DEFAULT 0"},
 	{"storage_objects", "blocks", "TEXT NOT NULL DEFAULT '[]'"},
-	{"storage_objects", "enc", "INTEGER NOT NULL DEFAULT 0"},       // the id of the key the blocks are sealed with; 0: not sealed
+	{"storage_objects", "enc", "INTEGER NOT NULL DEFAULT 0"},        // the id of the key the blocks are sealed with; 0: not sealed
+	{"storage_objects", "content_type", "TEXT NOT NULL DEFAULT ''"}, // as the writer named it
+	{"storage_objects", "meta", "TEXT NOT NULL DEFAULT '{}'"},       // the metadata the writer gave (a JSON object of text)
+	{"storage_uploads", "content_type", "TEXT NOT NULL DEFAULT ''"},
+	{"storage_uploads", "meta", "TEXT NOT NULL DEFAULT '{}'"},
 	{"storage_parts", "stored_sha256", "TEXT NOT NULL DEFAULT ''"}, // of the block as stored (sealed); sha256 stays that of what the shim sent, which the core compares
 	{"storage_parts", "stored_size", "INTEGER NOT NULL DEFAULT 0"},
 	{"storage_parts", "enc", "INTEGER NOT NULL DEFAULT 0"},

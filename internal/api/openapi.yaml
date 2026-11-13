@@ -6,11 +6,11 @@ info:
     The contract of the storage module (docs/storage-module.md), written down so that the Nim module and its Go replacement (blobgate) can be checked against one description.
     The module serves three kinds of caller on two ports:
 
-    * the core, on `CINIM_STORAGE_PORT` (18090), with a signed token per request (`coreToken`);
+    * the core, on `BLOBGATE_PORT` (18090), with a signed token per request (`coreToken`);
     * the operator, on the same port, with the admin token (`adminToken`);
-    * a step's shim, on `CINIM_STORAGE_SHIM_PORT` (18091), with a grant made by the core (`shimGrant`): only `PUT` of a part and `GET` of a range.
+    * a step's shim, on `BLOBGATE_SHIM_PORT` (18091), with a grant made by the core (`shimGrant`): only `PUT` of a part and `GET` of a range.
 
-    The shard is part of every key in the store: the object `acme/s1/app.txt` of shard `001` lies as `001/acme/s1/app.txt`.
+    The tenant is part of every key in the store: the object `acme/s1/app.txt` of tenant `001` lies as `001/acme/s1/app.txt`.
     Every error is `{"error": "<code>", "detail": "<words>"}`.
     The token strings are fixed byte for byte, see the schemes.
 servers:
@@ -22,24 +22,26 @@ components:
       type: http
       scheme: bearer
       description: |
-        `Bearer v1.<expires>.<mac>` with `X-Cinim-Shard: <digits>`. mac = hex(HMAC-SHA256(secret of the shard, `cinim/storage/v1|<len shard>|<shard>|<METHOD>|<len target>|<target>|<expires>`)),
-        target = the decoded path plus `?` and the query as sent. Valid 120 s, clock skew allowed 30 s (`common/storagetoken.nim`).
+        `Bearer v2.<expires>.<mac>` with `X-Blobgate-Tenant: <tenant>`. mac = hex(HMAC-SHA256(secret of the tenant, `blobgate/call/v2|<len tenant>|<tenant>|<METHOD>|<len target>|<target>|<expires>`)),
+        target = the decoded path plus `?` and the query as sent. Valid 120 s, clock skew allowed 30 s. The tokens of the first version are still accepted: `Bearer v1.<expires>.<mac>` made under the domain
+        `cinim/storage/v1`, with the header `X-Cinim-Shard` (the old name of `X-Blobgate-Tenant`). `blobgate token` makes one.
     adminToken:
       type: http
       scheme: bearer
-      description: 'the plain token of `CINIM_STORAGE_ADMIN_TOKEN` (at least 16 characters); the core does not hold it.'
+      description: 'the plain token of `BLOBGATE_ADMIN_TOKEN` (at least 16 characters); the core does not hold it.'
     shimGrant:
       type: http
       scheme: bearer
       description: |
-        `Bearer g1.<shard>.<expires>.<mac>` made by the core for one upload (to put its parts) or one object (to read it); mac over `cinim/storage/grant/v1|...` (shard, store, key, upload, mode),
-        valid two hours (`common/storagetoken.nim`).
+        `Bearer g2.<tenant>.<expires>.<mac>` made by the caller for one upload (to put its parts) or one object (to read it); mac over `blobgate/grant/v2|...` (tenant, store, key, upload, mode), valid two hours.
+        Grants of the first version (`g1`, domain `cinim/storage/grant/v1`) are still accepted.
   parameters:
-    shard:
-      name: X-Cinim-Shard
+    tenant:
+      name: X-Blobgate-Tenant
       in: header
       required: true
-      schema: {type: string, pattern: "^[0-9]+$"}
+      description: the tenant the call is made for (1..64 of lowercase letters, digits, `-` and `_`); `X-Cinim-Shard` is accepted as the old name
+      schema: {type: string, pattern: "^[a-z0-9_][a-z0-9_-]{0,63}$"}
     store:
       name: store
       in: path
@@ -76,7 +78,7 @@ components:
           description: |
             unauthorized, no_such_object, no_such_store, not_configured, invalid_key, invalid_request, invalid_part, invalid_range, range_required, sha256_required, sha256_mismatch,
             empty_body, too_large, store_full, storage_unreachable, store_in_use, unavailable, database_unavailable, method_not_allowed, not_found, unreadable, newer_layout,
-            no_such_upload, encrypted_no_key, decrypt_failed, encryption_failed, store_error
+            invalid_sha256, invalid_metadata, precondition_failed, range_not_satisfiable, no_such_upload, encrypted_no_key, decrypt_failed, encryption_failed, store_error
         detail: {type: string}
     Size:
       type: object
@@ -169,7 +171,7 @@ paths:
     get:
       summary: the stores and the default one, no secrets
       security: [{coreToken: []}]
-      parameters: [{$ref: "#/components/parameters/shard"}]
+      parameters: [{$ref: "#/components/parameters/tenant"}]
       responses:
         "200":
           description: ok
@@ -183,47 +185,69 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
   /v1/stores/{store}/objects/{key}:
     parameters:
-      - {$ref: "#/components/parameters/shard"}
+      - {$ref: "#/components/parameters/tenant"}
       - {$ref: "#/components/parameters/store"}
       - {$ref: "#/components/parameters/key"}
     put:
-      summary: 'put an object in one call (1 byte to 8 MiB), or a part of a multipart upload with `?upload=<id>&part=<n>`'
+      summary: |
+        write an object, or a part of a multipart upload with `?upload=<id>&part=<n>`. An object may be of any length: a body of known length up to 8 MiB is streamed to the nodes as it comes; a longer one, or one with
+        no length (chunked), is cut into blocks of 8 MiB by the module, which holds one block at a time. `X-Content-SHA256` is optional for an object (the digest of the whole body: checked when sent) and required for a part.
+        `Content-Type` and `X-Blobgate-Meta-<name>` headers are kept with the object and given back. `If-None-Match: *` (create only) and `If-Match: <etag>` (replace that version) are checked before the write,
+        not as a part of it: two writers at the same moment can both pass. An object of no bytes is allowed; a part is at least one byte.
       security: [{coreToken: []}]
       parameters:
-        - {$ref: "#/components/parameters/sha256"}
+        - {name: X-Content-SHA256, in: header, schema: {type: string, pattern: "^[0-9a-f]{64}$"}, description: "required for a part, optional for an object"}
+        - {name: Content-Type, in: header, schema: {type: string, maxLength: 255}}
+        - {name: If-Match, in: header, schema: {type: string}}
+        - {name: If-None-Match, in: header, schema: {type: string}}
         - {$ref: "#/components/parameters/upload"}
         - {$ref: "#/components/parameters/part"}
       requestBody:
-        required: true
         content:
           application/octet-stream: {schema: {type: string, format: binary}}
       responses:
         "200":
           description: "an object: {size}; a part: {etag} (the etag names the part's digest and length)"
-        "400": {description: "sha256_required, sha256_mismatch (the object is not left behind), invalid_key, invalid_part, empty_body", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "400": {description: "invalid_sha256, sha256_required (a part), sha256_mismatch (nothing is left behind), invalid_key, invalid_part, empty_body (a part), invalid_metadata", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "404": {description: no_such_store}
+        "404": {description: "no_such_store, no_such_upload"}
         "409": {description: not_configured}
-        "413": {description: too_large (above 8 MiB)}
+        "412": {description: precondition_failed}
+        "413": {description: "too_large (a part above 8 MiB, or an object above BLOBGATE_MAX_OBJECT_BYTES)"}
         "502": {description: the store said no}
         "503": {$ref: "#/components/responses/Unavailable"}
         "507": {$ref: "#/components/responses/StoreFull"}
+    head:
+      summary: what a GET would say, with no body (size, ETag, Last-Modified, Content-Type, the metadata); 404 with no body when there is no such object; honours If-None-Match and If-Match
+      security: [{coreToken: []}]
+      responses:
+        "200": {description: ok}
+        "304": {description: not modified}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {description: no such object}
     get:
       summary: |
-        read a range (`Range: bytes=a-b`, both ends, at most 256 MiB, answered 206 as a chunked stream), `?stat` for the size, or `?upload=<id>&parts` for the digests the module made of the parts it received (D-61)
+        read the whole object (200), or one range of it (206; `Range: bytes=a-b`, `bytes=a-`, `bytes=-n`; one range only). The bytes are streamed, a block at a time, each checked against its digest. The answer has
+        `ETag` (a version of the object), `Last-Modified`, `Content-Type`, `Accept-Ranges`, `Content-Range` for a range and the `X-Blobgate-Meta-<name>` headers; `If-None-Match` gives 304 and `If-Match` 412.
+        `?stat` gives {size, etag, content_type, modified, meta}, and `?upload=<id>&parts` the digests the module made of the parts it received.
       security: [{coreToken: []}]
       parameters:
         - {name: Range, in: header, schema: {type: string, example: "bytes=0-8388607"}}
+        - {name: If-None-Match, in: header, schema: {type: string}}
+        - {name: If-Match, in: header, schema: {type: string}}
         - {name: stat, in: query, allowEmptyValue: true, schema: {type: string}}
         - {name: parts, in: query, allowEmptyValue: true, schema: {type: string}}
         - {$ref: "#/components/parameters/upload"}
       responses:
         "200":
-          description: "`?stat`: {size}; `?parts`: {parts: [{part, sha256, size}]}"
-        "206": {description: 'the bytes of the range, `Content-Type: application/octet-stream`, `Transfer-Encoding: chunked`'}
-        "400": {description: range_required, invalid_range}
+          description: "the object; `?stat`: {size, etag, content_type, modified, meta}; `?parts`: {parts: [{part, sha256, size}]}"
+        "206": {description: 'the bytes of the range'}
+        "304": {description: not modified}
+        "400": {description: invalid_range}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {description: no_such_object, no_such_store}
+        "412": {description: precondition_failed}
+        "416": {description: range_not_satisfiable, with `Content-Range: bytes */<size>`}
         "503": {$ref: "#/components/responses/Unavailable"}
     post:
       summary: "`?uploads[&size=<bytes>]` begins a multipart upload; `?upload=<id>` completes it"
@@ -315,7 +339,7 @@ paths:
         "404": {description: no_such_store}
   /metrics:
     get:
-      summary: Prometheus metrics (docs/metrics.md); also on a port of its own with no token, `CINIM_STORAGE_METRICS_PORT`
+      summary: Prometheus metrics (docs/metrics.md); also on a port of its own with no token, `BLOBGATE_METRICS_PORT`
       security: [{adminToken: []}]
       responses:
         "200": {description: the metrics in the Prometheus text format}
@@ -328,7 +352,7 @@ paths:
         "200": {description: this file}
 x-shim-port:
   description: |
-    The second port (`CINIM_STORAGE_SHIM_PORT`, 18091, plain HTTP, its own pool, socket timeouts 30 s). Nothing else is open there.
+    The second port (`BLOBGATE_SHIM_PORT`, 18091, plain HTTP, its own pool, socket timeouts 30 s). Nothing else is open there.
     `PUT /s/{store}/{key}?upload=<id>&part=<n>` with `X-Content-SHA256` and a `g1` grant of mode `w`: 200 {etag}; 400 invalid_part, sha256_required, sha256_mismatch, empty_body; 413; 507 store_full.
     The module keeps (sha256, size) of the part in `storage_parts`, and the core compares them with what the shim reported before it completes the upload.
     `GET /s/{store}/{key}` with `Range: bytes=a-b` and a grant of mode `r`: 206 chunked stream; 400 range_required, invalid_range.

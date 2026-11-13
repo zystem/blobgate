@@ -3,6 +3,26 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
+## [0.3.0] - 2026-11-13
+
+The program is no longer only the storage of one product: it is named and spoken to as a general blob storage service for many tenants, and it speaks plain HTTP. **Nothing that worked stops working**: the old
+names of the settings, the old header, the old tokens and grants, and the old stored rows are still accepted (see "Names of the settings" in `docs/configuration.md`).
+
+### Changed
+* The settings are `BLOBGATE_<NAME>`; `CINIM_STORAGE_<NAME>` (and `CINIM_RQLITE_URL`, `CINIM_SHARD`, `CINIM_STORAGE_SHARDS`) still work, and the new one wins when both are set.
+* A *shard* is now a *tenant*: its name is 1..64 of lowercase letters, digits, `-` and `_` (digits, as before, are fine); the header is `X-Blobgate-Tenant` (`X-Cinim-Shard` still works); `blobgate token`
+  makes `v2` tokens and grants `g2` under a domain of the program's own; `v1` and `g1` are still accepted.
+* Secrets in the database are sealed as `v3.` under a key of the program's own domain; `v2.` rows are still opened and are sealed again when their store is saved.
+* The refusal for want of room ends with a general sentence; `BLOBGATE_FULL_HINT` replaces it with the operator's (the old text named the retention settings of CiNim).
+* A range that is past the end of the object is 416 `range_not_satisfiable` with `Content-Range: bytes */<size>` (it was 400); a range is no longer limited to 256 MiB; a read with no `Range` is the whole object
+  (it was 400 `range_required`).
+* `X-Content-SHA256` is optional for an object (required for a part); an object may be of any length (`BLOBGATE_MAX_OBJECT_BYTES` limits it), of no bytes, and of unknown length (chunked). It was 8 MiB at most in one call.
+* The chart: the Service and the Deployment are named after the release; the Secret key is `tenants` (`shards` of the first version is read too); `secrets.tenants` (`secrets.shards` is read too).
+
+### Added
+* Plain HTTP access for any client: `GET` of the whole object, `HEAD`, `ETag`, `Last-Modified`, `Accept-Ranges`, `Content-Range`, `If-None-Match` (304), `If-Match` (412), `Range: bytes=a-`, `bytes=-n`;
+  `Content-Type` and `X-Blobgate-Meta-<name>` headers kept with the object (also at the beginning of a multipart upload); `If-None-Match: *` and `If-Match` on a write and a delete.
+
 ## [0.2.0] - 2026-11-13
 
 ### Added
@@ -38,5 +58,6 @@ The first release: the storage module of CiNim, rewritten in Go on rclone.
 See `docs/status.md`: a read holds a block in memory (75 MB peak measured against 47 MB of the Nim module), nodes were tested with SFTPGo, Garage and local directories, the case of names on a server that folds
 case is not handled, the chart makes no bundled Garage or node.
 
+[0.3.0]: https://github.com/zystem/blobgate/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zystem/blobgate/releases/tag/v0.2.0
 [0.1.0]: https://github.com/zystem/blobgate/releases/tag/v0.1.0

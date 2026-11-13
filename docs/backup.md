@@ -9,14 +9,14 @@ the database: the nodes and the key are in the environment, and a backup is read
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CINIM_STORAGE_BACKUP_NODES` | none: no backups | JSON list of nodes: `[{"remote": ":sftp,host=h,user=u:/backups", "secrets": {"pass": "..."}}, ...]`. The same node as in a store (`:check` and `blobgate validate` work on it). One node is a backup with no copy: use two. |
-| `CINIM_STORAGE_BACKUP_KEY` | none: refused | At least 16 characters; the sealing key is made of it. **Keep it apart from the database and from the nodes** (a backup holds every secret of the database). |
-| `CINIM_STORAGE_BACKUP_PLAINTEXT` | `0` | `1`: no sealing. Not advised. |
-| `CINIM_STORAGE_BACKUP_KEEP` | `7` | Backups kept; older ones are removed after each new one. |
-| `CINIM_STORAGE_BACKUP_MIN_ACKS` | `0` (every node) | Nodes that must take every block. |
-| `CINIM_STORAGE_BACKUP_SECONDS` | `0` (the module does not back up by itself) | Back up every so many seconds; one replica at a time (the lease `backup`). Dangerous when too short: every backup reads the whole database. |
-| `CINIM_STORAGE_RESTORE_FALLBACK` | `0` | `1`: with `CINIM_STORAGE_RESTORE_ON_EMPTY`, when the newest backup does not check out take the newest that does (the state is then older). |
-| `CINIM_STORAGE_RESTORE_ON_EMPTY` | `0` | `1`: at start, a database with no table at all is filled from the newest backup before the module makes its own tables. |
+| `BLOBGATE_BACKUP_NODES` | none: no backups | JSON list of nodes: `[{"remote": ":sftp,host=h,user=u:/backups", "secrets": {"pass": "..."}}, ...]`. The same node as in a store (`:check` and `blobgate validate` work on it). One node is a backup with no copy: use two. |
+| `BLOBGATE_BACKUP_KEY` | none: refused | At least 16 characters; the sealing key is made of it. **Keep it apart from the database and from the nodes** (a backup holds every secret of the database). |
+| `BLOBGATE_BACKUP_PLAINTEXT` | `0` | `1`: no sealing. Not advised. |
+| `BLOBGATE_BACKUP_KEEP` | `7` | Backups kept; older ones are removed after each new one. |
+| `BLOBGATE_BACKUP_MIN_ACKS` | `0` (every node) | Nodes that must take every block. |
+| `BLOBGATE_BACKUP_SECONDS` | `0` (the module does not back up by itself) | Back up every so many seconds; one replica at a time (the lease `backup`). Dangerous when too short: every backup reads the whole database. |
+| `BLOBGATE_RESTORE_FALLBACK` | `0` | `1`: with `BLOBGATE_RESTORE_ON_EMPTY`, when the newest backup does not check out take the newest that does (the state is then older). |
+| `BLOBGATE_RESTORE_ON_EMPTY` | `0` | `1`: at start, a database with no table at all is filled from the newest backup before the module makes its own tables. |
 
 ## Take a backup
 
@@ -49,7 +49,7 @@ restore: the database is not empty: a restore replaces all of it; run it with fo
 
 `-force` replaces all of it; `-id <id>` takes another backup than the newest.
 
-With `CINIM_STORAGE_RESTORE_ON_EMPTY=1` the module does this itself at start (and starts empty, with a line in the log, when there is no backup at all; it stops when there is one that cannot be read, rather
+With `BLOBGATE_RESTORE_ON_EMPTY=1` the module does this itself at start (and starts empty, with a line in the log, when there is no backup at all; it stops when there is one that cannot be read, rather
 than make new tables over what it would have restored).
 
 ## The newest backup is damaged
@@ -63,17 +63,17 @@ restore: the backup does not check out, the database is untouched: 20261112T2153
 * `blobgate verify -all` reads every backup and says which can be read (`ok` or `BAD` with the reason).
 * `blobgate restore -id 20261111T215317Z-91ab03` takes the one you choose.
 * `blobgate restore -fallback` takes the newest that checks out. The database is then **older** than the newest backup says, by as much as the backups that were skipped; look at the line it prints.
-* `CINIM_STORAGE_RESTORE_FALLBACK=1` does the same for `CINIM_STORAGE_RESTORE_ON_EMPTY=1` at start. Default `0`: a module that cannot read the newest backup stops, because starting from an older state
+* `BLOBGATE_RESTORE_FALLBACK=1` does the same for `BLOBGATE_RESTORE_ON_EMPTY=1` at start. Default `0`: a module that cannot read the newest backup stops, because starting from an older state
   is a decision for a person, not for a restart loop.
 
 ## What was run (2026-11-12) and what was not
 
-Run: the commands above against a real rqlite and two `local` nodes; the start of the module on a wiped database with `CINIM_STORAGE_RESTORE_ON_EMPTY=1` (the row written before the wipe was there
+Run: the commands above against a real rqlite and two `local` nodes; the start of the module on a wiped database with `BLOBGATE_RESTORE_ON_EMPTY=1` (the row written before the wipe was there
 afterwards); in the tests (`internal/backup`, with Docker): a database of 14 MiB of random data in several blocks, restored and compared by digest; a block damaged on one node (read from the other) and on both
 (the restore stops, the database is untouched); a wrong key; sealed read as plain and the opposite; the removal of old backups and of a backup that was cut off; no backup at all.
 
 Not run: nodes of FTP, WebDAV or SFTP for the backups (they are the same code as the stores', which were); a database of gigabytes; a rqlite of several nodes (the load goes to the address in
-`CINIM_RQLITE_URL`; it must reach the leader); the repair of a node that missed a block of a backup (a backup that two nodes took and one lost is read from the other; nothing copies it back yet).
+`BLOBGATE_RQLITE_URL`; it must reach the leader); the repair of a node that missed a block of a backup (a backup that two nodes took and one lost is read from the other; nothing copies it back yet).
 
 ## Why it is made like this
 

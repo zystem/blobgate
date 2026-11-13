@@ -26,7 +26,7 @@ func (s *Server) shim(w http.ResponseWriter, r *http.Request) {
 	}
 	st, key := rest[:slash], rest[slash+1:]
 	grant := bearer(r)
-	shard := auth.GrantShard(grant) // the grant says which shard it is for; the secret of that shard checks it
+	shard := auth.GrantTenant(grant) // the grant says which shard it is for; the secret of that shard checks it
 	secret, known := s.cfg.ShardSecrets[shard]
 	if !validShard(shard) || !known || st == defaultNam || layout.Valid(key) != "" {
 		problem(w, 401, "unauthorized", "the grant is wrong, expired, or not for this call")

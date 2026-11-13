@@ -19,7 +19,7 @@ The tool is `cmd/bench` (the same HTTP calls the core makes, signed as the core 
 
 * **Writes are several times faster** than with the Nim module on the same nodes, and reads are the same within the noise (the 1 GiB read and the small reads are a little lower, 10 to 20 %). Why the Nim module writes slower was not looked for.
 * **Memory is not as good: 75 MB against 47 MB** (115 MB sealed). A read holds the whole block (up to 8 MiB) to check its digest before a byte goes out, a sealed write holds two; the number of blocks held is
-  bounded (`CINIM_STORAGE_THREADS`, 8) but the size of a block is not made smaller. The module sets `GOGC=25` to keep the heap near what is live (without it the peak of the same run was 102 MB).
+  bounded (`BLOBGATE_THREADS`, 8) but the size of a block is not made smaller. The module sets `GOGC=25` to keep the heap near what is live (without it the peak of the same run was 102 MB).
   "Not worse than Nim" is **not reached** for memory; the figure the task gave (35 MiB for six blocks at once) was not measured here because the Go module holds a block, not a stream.
 * **Sealing costs** about 40 % of the write rate and 20 % of the read rate of 8 MiB blocks, and memory.
 

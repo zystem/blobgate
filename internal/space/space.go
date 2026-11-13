@@ -3,7 +3,10 @@ package space
 
 import "fmt"
 
-// DefaultReserve is what is kept free in a store (CINIM_STORAGE_RESERVE_BYTES, 256 MiB).
+// Hint is what a refusal for want of room tells the person to do. The operator sets it for the product that uses the module (BLOBGATE_FULL_HINT), so that it can name that product's own settings.
+var Hint = "free space in it, delete data that is no longer needed, or give the store a bigger volume"
+
+// DefaultReserve is what is kept free in a store (BLOBGATE_RESERVE_BYTES, 256 MiB).
 const DefaultReserve int64 = 256 << 20
 
 // Info is how much room a store has; Known is false when it cannot say (nothing is refused then).
@@ -33,7 +36,6 @@ func Problem(i Info, need, reserve int64, store string) string {
 	if !i.Known || i.Free-need >= reserve {
 		return ""
 	}
-	return fmt.Sprintf("the store %s is nearly full: %s free of %s, this upload needs %s and %s are kept free; "+
-		"delete caches or artifacts, shorten their retention (cache.retention, artifacts.retention), or give the store a bigger volume",
-		store, Human(max(i.Free, 0)), Human(i.Total), Human(need), Human(reserve))
+	return fmt.Sprintf("the store %s is nearly full: %s free of %s, this upload needs %s and %s are kept free; %s",
+		store, Human(max(i.Free, 0)), Human(i.Total), Human(need), Human(reserve), Hint)
 }

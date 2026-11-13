@@ -86,10 +86,10 @@ func (c Config) keep() int {
 
 func (c Config) mirror(ctx context.Context) (*store.Mirror, error) {
 	if len(c.Nodes) == 0 {
-		return nil, errors.New("no backup nodes are set (CINIM_STORAGE_BACKUP_NODES)")
+		return nil, errors.New("no backup nodes are set (BLOBGATE_BACKUP_NODES)")
 	}
 	if c.Key == "" && !c.Plaintext {
-		return nil, errors.New("no key for the backups is set (CINIM_STORAGE_BACKUP_KEY); a backup holds every secret of the database, so it is sealed, unless CINIM_STORAGE_BACKUP_PLAINTEXT=1")
+		return nil, errors.New("no key for the backups is set (BLOBGATE_BACKUP_KEY); a backup holds every secret of the database, so it is sealed, unless BLOBGATE_BACKUP_PLAINTEXT=1")
 	}
 	cfg := store.Config{Kind: "mirror", Nodes: c.Nodes, MinAcks: c.MinAcks}
 	if why := cfg.Check(c.Secrets); why != "" {
@@ -388,7 +388,7 @@ func (c Config) reader(ctx context.Context, m *store.Mirror, man Manifest) (io.R
 		}
 	}
 	if man.Sealed == c.Plaintext {
-		return nil, fmt.Errorf("the backup is %s and the settings say the opposite (CINIM_STORAGE_BACKUP_PLAINTEXT)", map[bool]string{true: "sealed", false: "not sealed"}[man.Sealed])
+		return nil, fmt.Errorf("the backup is %s and the settings say the opposite (BLOBGATE_BACKUP_PLAINTEXT)", map[bool]string{true: "sealed", false: "not sealed"}[man.Sealed])
 	}
 	pr, pw := io.Pipe()
 	go func() {
