@@ -19,11 +19,13 @@ import (
 	"github.com/zystem/blobgate/internal/api"
 	"github.com/zystem/blobgate/internal/backup"
 	"github.com/zystem/blobgate/internal/db"
+	"github.com/zystem/blobgate/internal/envfile"
 	"github.com/zystem/blobgate/internal/maint"
 	"github.com/zystem/blobgate/internal/metrics"
 	"github.com/zystem/blobgate/internal/rq"
 	"github.com/zystem/blobgate/internal/seal"
 	"github.com/zystem/blobgate/internal/store"
+	"github.com/zystem/blobgate/internal/tlsutil"
 )
 
 // version is set at build time (-ldflags "-X main.version=1.2.3"); "dev" is a build that was not made for a release.
@@ -32,6 +34,15 @@ var version = "dev"
 func fatal(msg string) {
 	fmt.Fprintln(os.Stderr, "storage: "+msg)
 	os.Exit(2)
+}
+
+// secretEnv is a setting that holds a secret: its value, or the file named by NAME_FILE (internal/envfile).
+func secretEnv(name string) string {
+	v, err := envfile.Get(name)
+	if err != nil {
+		fatal(err.Error())
+	}
+	return v
 }
 
 func envInt(name string, def int64) int64 {
@@ -72,7 +83,7 @@ func main() {
 		fatal("CINIM_RQLITE_URL is not set")
 	}
 	secrets := map[string]string{}
-	for _, pair := range strings.Split(os.Getenv("CINIM_STORAGE_SHARDS"), ";") {
+	for _, pair := range strings.Split(secretEnv("CINIM_STORAGE_SHARDS"), ";") {
 		if strings.TrimSpace(pair) == "" {
 			continue
 		}
@@ -82,7 +93,7 @@ func main() {
 		}
 		secrets[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
-	if t := os.Getenv("CINIM_STORAGE_TOKEN"); len(secrets) == 0 && t != "" {
+	if t := secretEnv("CINIM_STORAGE_TOKEN"); len(secrets) == 0 && t != "" {
 		shard := os.Getenv("CINIM_SHARD")
 		if shard == "" {
 			shard = "001"
@@ -100,11 +111,11 @@ func main() {
 			fatal("the secret of shard " + shard + " is shorter than 16 characters")
 		}
 	}
-	admin := os.Getenv("CINIM_STORAGE_ADMIN_TOKEN")
+	admin := secretEnv("CINIM_STORAGE_ADMIN_TOKEN")
 	if len(admin) < 16 {
 		fatal("CINIM_STORAGE_ADMIN_TOKEN is shorter than 16 characters")
 	}
-	sealText := os.Getenv("CINIM_STORAGE_SEAL_KEY")
+	sealText := secretEnv("CINIM_STORAGE_SEAL_KEY")
 	if len(sealText) < 16 {
 		fatal("CINIM_STORAGE_SEAL_KEY is shorter than 16 characters")
 	}
@@ -155,9 +166,30 @@ func main() {
 		mux.Handle("/metrics", metrics.Handler())
 		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", mp), Handler: mux, ReadHeaderTimeout: 10 * time.Second})
 	}
+	// TLS on every port when a certificate is given (TLS 1.2 or later; the certificate is read again when its files change)
+	tlsOn := false
+	if cf, kf := os.Getenv("CINIM_STORAGE_TLS_CERT_FILE"), os.Getenv("CINIM_STORAGE_TLS_KEY_FILE"); cf != "" || kf != "" {
+		if cf == "" || kf == "" {
+			fatal("CINIM_STORAGE_TLS_CERT_FILE and CINIM_STORAGE_TLS_KEY_FILE are set together")
+		}
+		cfg, err := tlsutil.Config(cf, kf)
+		if err != nil {
+			fatal(err.Error())
+		}
+		for _, s := range servers {
+			s.TLSConfig = cfg
+		}
+		tlsOn = true
+	}
 	errc := make(chan error, len(servers))
 	for _, s := range servers {
-		go func(s *http.Server) { errc <- s.ListenAndServe() }(s)
+		go func(s *http.Server) {
+			if tlsOn {
+				errc <- s.ListenAndServeTLS("", "")
+				return
+			}
+			errc <- s.ListenAndServe()
+		}(s)
 	}
 	keys := make([]string, 0, len(secrets))
 	for k := range secrets {

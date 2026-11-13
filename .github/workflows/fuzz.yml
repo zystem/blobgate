@@ -1,0 +1,34 @@
+name: Fuzz
+
+# the parsers that face the network: a minute each once a week, a quarter of an hour each once a month (and when asked, for as long as asked); not on every push
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+    - cron: "17 1 1 * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "per target (a Go duration: 60s, 15m)"
+        default: "60s"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      FUZZTIME: ${{ github.event.inputs.fuzztime || (github.event.schedule == '17 1 1 * *' && '15m' || '60s') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -run '^$' -fuzz '^FuzzParse$' -fuzztime "$FUZZTIME" ./internal/auth
+      - run: go test -run '^$' -fuzz '^FuzzOpen$' -fuzztime "$FUZZTIME" ./internal/seal
+      - run: go test -run '^$' -fuzz '^FuzzOpen$' -fuzztime "$FUZZTIME" ./internal/store
+      - run: go test -run '^$' -fuzz '^FuzzEscape$' -fuzztime "$FUZZTIME" ./internal/layout

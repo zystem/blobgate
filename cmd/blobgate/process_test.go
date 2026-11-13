@@ -6,11 +6,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -298,4 +306,70 @@ func TestTheReplicaThatTakesOver(t *testing.T) {
 		t.Fatalf("read through the replica that took over: %d", code)
 	}
 	_ = strings.TrimSpace
+}
+
+// The secrets can be files (NAME_FILE) and the ports can be TLS: the program starts with no secret in its environment, and answers on https with a certificate that a client verifies.
+func TestSecretsFromFilesAndTLS(t *testing.T) {
+	rqURL := startRqlite(t)
+	dir := t.TempDir()
+	put := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "blobgate-test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	kb, _ := x509.MarshalPKCS8PrivateKey(key)
+	certFile := put("tls.crt", strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))))
+	keyFile := put("tls.key", strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kb}))))
+	cert, _ := x509.ParseCertificate(der)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+
+	p := &proc{port: freePort(t), log: &bytes.Buffer{}}
+	p.cmd = exec.Command(binary(t))
+	p.cmd.Env = append(os.Environ(), "CINIM_RQLITE_URL="+rqURL, fmt.Sprintf("CINIM_STORAGE_PORT=%d", p.port), "CINIM_STORAGE_SHIM_PORT=0",
+		"CINIM_STORAGE_SHARDS=", "CINIM_STORAGE_SHARDS_FILE="+put("shards", "001="+secret),
+		"CINIM_STORAGE_ADMIN_TOKEN=", "CINIM_STORAGE_ADMIN_TOKEN_FILE="+put("admin", adminT),
+		"CINIM_STORAGE_SEAL_KEY=", "CINIM_STORAGE_SEAL_KEY_FILE="+put("seal", "a-seal-key-for-the-file-test"),
+		"CINIM_STORAGE_TLS_CERT_FILE="+certFile, "CINIM_STORAGE_TLS_KEY_FILE="+keyFile)
+	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
+	if err := p.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.cmd.Process.Kill(); _ = p.cmd.Wait() })
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	waitFor(t, "the module answers on https", 20*time.Second, func() bool {
+		resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/readyz", p.port))
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == 200
+	})
+	if resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", p.port)); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			t.Fatal("plain http was answered on a TLS port")
+		}
+	}
+	if _, err := (&http.Client{}).Get(fmt.Sprintf("https://127.0.0.1:%d/readyz", p.port)); err == nil {
+		t.Fatal("a client that does not trust the certificate was served")
+	}
+	// the admin token read from its file is the one that works
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://127.0.0.1:%d/v1/admin/stores", p.port), nil)
+	req.Header.Set("Authorization", "Bearer "+adminT)
+	if resp, err := client.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("admin with the token of the file: %v %v", err, resp)
+	}
+	// both the value and the file: refused at start, with words
+	bad := exec.Command(binary(t))
+	bad.Env = append(os.Environ(), "CINIM_RQLITE_URL="+rqURL, "CINIM_STORAGE_SHARDS=001="+secret, "CINIM_STORAGE_SEAL_KEY=a-seal-key-for-the-file-test", "CINIM_STORAGE_ADMIN_TOKEN=an-admin-token-for-the-test", "CINIM_STORAGE_ADMIN_TOKEN_FILE="+put("admin2", adminT))
+	if out, err := bad.CombinedOutput(); err == nil || !strings.Contains(string(out), "both set") {
+		t.Fatalf("a value and a file together: %v %s", err, out)
+	}
 }

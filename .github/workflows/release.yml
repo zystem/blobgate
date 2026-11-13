@@ -1,6 +1,7 @@
 name: release
 # A tag vX.Y.Z (or vX.Y.Z-rc.1) tests the tagged commit, then publishes: the image (ghcr.io/<owner>/blobgate, linux/amd64 and linux/arm64, with provenance and an SBOM), the chart
-# (oci://ghcr.io/<owner>/charts/blobgate) and a GitHub release with the program for linux/amd64 and linux/arm64 and its checksums.
+# (oci://ghcr.io/<owner>/charts/blobgate) and a GitHub release with the program for linux/amd64 and linux/arm64, its checksums and the bill of materials. Everything is signed keyless with the identity
+# of this workflow (cosign, recorded in the public Sigstore log) and has a build provenance attestation; there is no private key of the project. docs/verifying-releases.md says how to check it.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
@@ -20,13 +21,18 @@ jobs:
     needs: ci
     runs-on: ubuntu-24.04
     permissions:
-      contents: write     # the release
-      packages: write     # the image and the chart
+      contents: write        # the release
+      packages: write        # the image and the chart
+      id-token: write        # the keyless signature and the attestation
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -43,6 +49,7 @@ jobs:
           pre=false; [[ "$ver" == *-* ]] && pre=true
           { echo "tag=$tag"; echo "ver=$ver"; echo "owner=$owner"; echo "pre=$pre"; echo "minor=${ver%.*}"; } >> "$GITHUB_OUTPUT"
       - name: the image
+        id: image
         env:
           VER: ${{ steps.v.outputs.ver }}
           OWNER: ${{ steps.v.outputs.owner }}
@@ -54,21 +61,39 @@ jobs:
           tags=(-t "$image:$VER")
           if [ "$PRE" = false ]; then tags+=(-t "$image:$MINOR" -t "$image:latest"); fi
           docker buildx create --use --driver docker-container >/dev/null
-          docker buildx build --platform linux/amd64,linux/arm64 --push --provenance=mode=max --sbom=true \
+          docker buildx build --platform linux/amd64,linux/arm64 --push --provenance=mode=max --sbom=true --metadata-file meta.json \
             --build-arg "VERSION=$VER" --build-arg "REVISION=$GITHUB_SHA" "${tags[@]}" .
-      - name: the program and its checksums
+          digest=$(python3 -c 'import json;print(json.load(open("meta.json"))["containerimage.digest"])')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "$image@$digest"
+      - name: provenance of the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ steps.v.outputs.owner }}/blobgate
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - name: the program, its checksums and its bill of materials
         env:
           VER: ${{ steps.v.outputs.ver }}
         run: |
           set -euo pipefail
           mkdir dist
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w -X main.version=$VER" -o "dist/blobgate" ./cmd/blobgate
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildmode=pie -ldflags="-s -w -X main.version=$VER" -o dist/blobgate ./cmd/blobgate
             tar -C dist -czf "dist/blobgate_${VER}_linux_${arch}.tar.gz" blobgate
             rm dist/blobgate
           done
           (cd dist && sha256sum ./*.tar.gz > checksums.txt)
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/blobgate.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
       - name: the chart
+        id: chart
         env:
           VER: ${{ steps.v.outputs.ver }}
           OWNER: ${{ steps.v.outputs.owner }}
@@ -76,7 +101,28 @@ jobs:
           set -euo pipefail
           helm package charts/blobgate --version "$VER" --app-version "$VER" --destination dist
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm push "dist/blobgate-${VER}.tgz" "oci://ghcr.io/${OWNER}/charts"
+          helm push "dist/blobgate-${VER}.tgz" "oci://ghcr.io/${OWNER}/charts" 2>&1 | tee push.log
+          digest=$(grep -o 'sha256:[0-9a-f]\{64\}' push.log | tail -1)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "ghcr.io/${OWNER}/charts/blobgate@$digest"
+      - name: provenance of the chart
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ steps.v.outputs.owner }}/charts/blobgate
+          subject-digest: ${{ steps.chart.outputs.digest }}
+          push-to-registry: true
+      - name: sign the files
+        run: |
+          set -euo pipefail
+          for f in dist/*.tar.gz dist/checksums.txt dist/blobgate-*.tgz dist/blobgate.spdx.json; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+      - name: provenance of the files
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/blobgate-*.tgz
       - name: the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,6 +139,7 @@ jobs:
             echo
             echo "Image: \`ghcr.io/${OWNER}/blobgate:${VER}\` (linux/amd64, linux/arm64)"
             echo "Chart: \`oci://ghcr.io/${OWNER}/charts/blobgate --version ${VER}\`"
+            echo "Signatures, provenance and how to check them: docs/verifying-releases.md"
           } >> notes.md
           flags=(); [ "$PRE" = true ] && flags+=(--prerelease)
-          gh release create "$TAG" dist/*.tar.gz dist/checksums.txt "dist/blobgate-${VER}.tgz" --title "blobgate $VER" --notes-file notes.md "${flags[@]}" --verify-tag
+          gh release create "$TAG" dist/*.tar.gz dist/checksums.txt dist/blobgate.spdx.json "dist/blobgate-${VER}.tgz" dist/*.sigstore.json --title "blobgate $VER" --notes-file notes.md "${flags[@]}" --verify-tag

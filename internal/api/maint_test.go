@@ -342,3 +342,28 @@ func TestNewerLayoutIsRefused(t *testing.T) {
 		t.Fatalf("%d %s", code, data)
 	}
 }
+
+func between(s, a, b string) string {
+	i := strings.Index(s, a)
+	if i < 0 {
+		return ""
+	}
+	s = s[i+len(a):]
+	if j := strings.Index(s, b); j >= 0 {
+		return s[:j]
+	}
+	return s
+}
+
+func waitUntil(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if ok() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("not within 10 s: %s", what)
+}
+
+func rqS(sql string, args ...any) rq.Stmt { return rq.S(sql, args...) }

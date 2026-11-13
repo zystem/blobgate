@@ -11,12 +11,20 @@ Reference page. Every setting is an environment variable; a change needs a resta
 | `CINIM_STORAGE_TOKEN`, `CINIM_SHARD` | none; shard `001` | One shard in short: the secret and the shard. Used only when `CINIM_STORAGE_SHARDS` is empty. |
 | `CINIM_STORAGE_ADMIN_TOKEN` | required | The token of the admin API and `/metrics` (at least 16 characters). |
 | `CINIM_STORAGE_SEAL_KEY` | required | The key the secrets of the stores are sealed under in the database (at least 16 characters). **Keep it apart from the database**; losing it makes the stored secrets unreadable. |
+| `CINIM_STORAGE_TLS_CERT_FILE`, `CINIM_STORAGE_TLS_KEY_FILE` | none: plain HTTP | Both set: every port (the main one, the one for shims, the metrics one) serves TLS 1.2 or later with this certificate and key (PEM); the files are read again when they change, so a renewed certificate needs no restart. Either one alone stops the program. **Dangerous** to leave off when the port can be reached from outside the cluster: the tokens are signed per call but the bodies are not hidden. |
 | `CINIM_STORAGE_PORT` | `18090` | The port of the core's calls, the admin API, `/healthz`, `/readyz`, `/metrics`, `/v1/openapi.yaml`. |
 | `CINIM_STORAGE_SHIM_PORT` | `18091` | The port for step shims (plain HTTP, grants only; socket timeouts 30 s). `0`: none. |
 | `CINIM_STORAGE_METRICS_PORT` | `0` (off) | A port that serves `/metrics` with no token, for a scraper inside the cluster. **Dangerous** when it can be reached from outside. |
 | `CINIM_STORAGE_THREADS` | `8` | Reads and sealed writes of a block at once (each holds a block, up to 8 MiB, in memory). |
 | `CINIM_STORAGE_RESERVE_BYTES` | `268435456` (256 MiB) | Room kept free in a store: a write that would leave less is refused with 507 `store_full`. `0` is the default, not "none". |
 | `GOGC` | `25` | The garbage collector of the Go runtime; the program sets 25 unless it is set. |
+
+### Secrets as files
+
+Every setting that holds a secret can be given as a file instead of a value: `CINIM_STORAGE_SHARDS_FILE`, `CINIM_STORAGE_TOKEN_FILE`, `CINIM_STORAGE_ADMIN_TOKEN_FILE`, `CINIM_STORAGE_SEAL_KEY_FILE`,
+`CINIM_STORAGE_BACKUP_NODES_FILE` and `CINIM_STORAGE_BACKUP_KEY_FILE` hold the path of a file whose contents are the value (one trailing newline is dropped). A Kubernetes Secret or a Docker secret mounted as a file
+then never appears in the environment of the process. The file must not be readable by everyone (mode 0600 or 0400), or the program stops with words; a value and its file both set also stop it. A secret is
+replaced by changing the file and restarting; nothing is rebuilt.
 
 ## Repair and cleaning (one replica at a time, under a lease)
 

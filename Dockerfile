@@ -13,7 +13,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/blobgate ./cmd/blobgate
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -buildmode=pie -ldflags="-s -w -X main.version=${VERSION}" -o /out/blobgate ./cmd/blobgate
 
 FROM gcr.io/distroless/static:${RUNTIME_TAG}
 ARG VERSION=dev

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/zystem/blobgate/internal/envfile"
 	"github.com/zystem/blobgate/internal/store"
 )
 
@@ -19,7 +20,10 @@ type nodeEnv struct {
 }
 
 // Configured says whether the environment names backup nodes at all.
-func Configured() bool { return os.Getenv("CINIM_STORAGE_BACKUP_NODES") != "" }
+func Configured() bool {
+	v, err := envfile.Get("CINIM_STORAGE_BACKUP_NODES")
+	return err != nil || v != ""
+}
 
 // FromEnv reads the settings of the backups from the environment:
 //
@@ -29,7 +33,14 @@ func Configured() bool { return os.Getenv("CINIM_STORAGE_BACKUP_NODES") != "" }
 //	CINIM_STORAGE_BACKUP_KEEP       how many backups are kept (7)
 //	CINIM_STORAGE_BACKUP_MIN_ACKS   nodes that must take every block (0: all)
 func FromEnv(rqliteURL string) (Config, error) {
-	raw := os.Getenv("CINIM_STORAGE_BACKUP_NODES")
+	raw, err := envfile.Get("CINIM_STORAGE_BACKUP_NODES")
+	if err != nil {
+		return Config{}, err
+	}
+	key, err := envfile.Get("CINIM_STORAGE_BACKUP_KEY")
+	if err != nil {
+		return Config{}, err
+	}
 	if raw == "" {
 		return Config{}, errors.New("CINIM_STORAGE_BACKUP_NODES is not set")
 	}
@@ -37,7 +48,7 @@ func FromEnv(rqliteURL string) (Config, error) {
 	if err := json.Unmarshal([]byte(raw), &nodes); err != nil {
 		return Config{}, fmt.Errorf("CINIM_STORAGE_BACKUP_NODES is not a JSON list of nodes: %w", err)
 	}
-	c := Config{RqliteURL: rqliteURL, Key: os.Getenv("CINIM_STORAGE_BACKUP_KEY"), Plaintext: os.Getenv("CINIM_STORAGE_BACKUP_PLAINTEXT") == "1"}
+	c := Config{RqliteURL: rqliteURL, Key: key, Plaintext: os.Getenv("CINIM_STORAGE_BACKUP_PLAINTEXT") == "1"}
 	for _, n := range nodes {
 		spec := store.NodeSpec{Backend: n.Backend, Options: n.Options, Path: n.Path}
 		if n.Remote != "" {

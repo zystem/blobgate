@@ -11,6 +11,13 @@ Every page is of one kind (Diátaxis). The README at the root is the way in.
 | [metrics.md](metrics.md) | reference | every metric |
 | [../internal/api/openapi.yaml](../internal/api/openapi.yaml) | reference | the HTTP API (served at `/v1/openapi.yaml`; a test keeps it equal to the routes) |
 | [release.md](release.md) | how-to | cut a release: what the tag does, what to check after |
+| [verifying-releases.md](verifying-releases.md) | how-to | check the signatures, the provenance and the repeatable build of a release |
+| [upgrading.md](upgrading.md) | how-to | upgrade, and what is kept across releases |
+| [supported-versions.md](supported-versions.md) | reference | which releases get fixes |
+| [architecture.md](architecture.md) | explanation | the parts, the data model, the trust boundaries |
+| [threat-model.md](threat-model.md), [assurance-case.md](assurance-case.md), [security-requirements.md](security-requirements.md), [security-policies.md](security-policies.md) | explanation and reference | the security of the program: what to expect, from whom, why it holds, how it is kept |
+| [roadmap.md](roadmap.md) | explanation | what the project intends and does not intend to do in the next year |
+| [writing-docs.md](writing-docs.md) | how-to | how the pages are written |
 | [data-lifecycle.md](data-lifecycle.md) | explanation | what happens to a block, and what a crash leaves |
 | [rclone-probe.md](rclone-probe.md) | explanation | what rclone does on real nodes, with what was run |
 | [benchmark.md](benchmark.md) | explanation and record | speed and memory against the Nim module |

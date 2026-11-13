@@ -137,10 +137,11 @@ func (c Config) open(ad cipher.AEAD, id string, n int, data []byte) ([]byte, err
 	return p, nil
 }
 
+// newID makes the id of a backup: the time to the second, then the milliseconds (so that two backups of one second sort in the order they were made), then three random bytes.
 func newID(now time.Time) string {
 	b := make([]byte, 3)
 	_, _ = rand.Read(b)
-	return now.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b)
+	return fmt.Sprintf("%s-%03d%s", now.UTC().Format("20060102T150405Z"), now.UTC().Nanosecond()/1e6, hex.EncodeToString(b))
 }
 
 func idTime(id string) (time.Time, bool) {
@@ -463,8 +464,9 @@ func verifyManifest(ctx context.Context, c Config, m *store.Mirror, man Manifest
 	if err != nil {
 		return man, err
 	}
-	n, err := io.Copy(io.Discard, r)
-	if err != nil {
+	// at most what the manifest says, plus one byte to see that there is more: a block that decompresses to more is damaged, and is not read to the end
+	n, err := io.CopyN(io.Discard, r, man.RawSize+1)
+	if err != nil && err != io.EOF {
 		return man, err
 	}
 	if n != man.RawSize {

@@ -15,31 +15,78 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
       - name: rqlite
         run: |
           docker run -d --name rq -p 127.0.0.1:4001:4001 --tmpfs /rqlite/file:rw,size=512m,mode=1777 "$RQLITE_IMAGE" -fk -disco-mode=
           for _ in $(seq 1 60); do curl -fs http://127.0.0.1:4001/readyz >/dev/null && exit 0; sleep 1; done
           docker logs rq; exit 1
       - run: go vet ./...
+      # the coverage gate is for the program; cmd/bench is a load generator, tested by use and not counted
       - name: "tests, with the real servers (SFTPGo, Garage, a rqlite for the backups) and the program killed with SIGKILL"
         env:
           CINIM_RQLITE_URL: http://127.0.0.1:4001
           BLOBGATE_DOCKER_TESTS: "1"
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -coverpkg=./cmd/blobgate,./internal/... -coverprofile=cover.out ./cmd/blobgate ./internal/...
+      - name: Statement coverage must stay at 80% or more
+        run: |
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "statement coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit !(t + 0 >= 80) }' || { echo "::error::statement coverage ${total}% is below 80%"; exit 1; }
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  analysis:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # staticcheck with all its checks, and gosec; each exception in the code has its reason
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -checks all ./...
+      - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet -exclude-generated ./...
+
+  reproducible:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: the same source gives the same bytes
+        run: |
+          for arch in amd64 arm64; do
+            for i in 1 2; do
+              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildmode=pie -ldflags="-s -w -X main.version=ci" -o "/tmp/blobgate-$arch-$i" ./cmd/blobgate
+            done
+            a=$(sha256sum "/tmp/blobgate-$arch-1" | cut -d' ' -f1); b=$(sha256sum "/tmp/blobgate-$arch-2" | cut -d' ' -f1)
+            echo "$arch: $a $b"
+            [ "$a" = "$b" ] || { echo "::error::the build for $arch is not repeatable"; exit 1; }
+          done
 
   chart:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: sh tools/test/chart.sh
 
   image:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: build for both platforms (not pushed) and run it read-only
         run: |
           docker buildx create --use --driver docker-container >/dev/null

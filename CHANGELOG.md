@@ -3,6 +3,17 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
+## [Unreleased]
+
+### Added
+* Secrets as files (`CINIM_STORAGE_*_FILE`), TLS on every port (`CINIM_STORAGE_TLS_CERT_FILE`, `CINIM_STORAGE_TLS_KEY_FILE`, TLS 1.2 or later, certificates read again when they change).
+* Signed releases: the files, the image and the chart are signed keyless and have build provenance; the program is built as a position-independent executable and repeatably; a bill of materials is attached.
+* Security documents (policy, threat model, assurance case, requirements), governance, contributing, roadmap, supported versions; CI gates (coverage of 80%, `staticcheck`, `gosec`, `govulncheck`, a repeatable build,
+  DCO, dependency review, Scorecard, Trivy, fuzzing).
+
+### Fixed
+* The ids of backups made in one second now sort in the order they were made.
+
 ## [0.1.0] - 2026-11-13
 
 The first release: the storage module of CiNim, rewritten in Go on rclone.
