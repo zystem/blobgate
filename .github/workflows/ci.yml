@@ -49,9 +49,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # staticcheck with all its checks, and gosec; each exception in the code has its reason
+      # staticcheck with all its checks, and gosec without G104 (unchecked errors: the best-effort cleanups and closes are on purpose, each with its reason in the code)
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -checks all ./...
-      - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet -exclude-generated ./...
+      - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet -exclude=G104 -exclude-generated ./...
 
   reproducible:
     runs-on: ubuntu-24.04

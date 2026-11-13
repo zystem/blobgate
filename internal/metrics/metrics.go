@@ -5,6 +5,7 @@ package metrics
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,7 @@ func statusClass(code int) string {
 	if code == 0 {
 		return "0" // no answer: the connection was cut
 	}
-	return string(rune('0'+code/100)) + "xx"
+	return strconv.Itoa(code/100) + "xx"
 }
 
 // NodeError records an operation that a node failed.

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -242,7 +243,7 @@ func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: uint32(rq.Int(rows[0][4]))}
+	o := &objectRow{size: rq.Int(rows[0][0]), generation: rq.Str(rows[0][1]), blockSize: rq.Int(rows[0][2]), enc: keyID(rq.Int(rows[0][4]))}
 	if err := json.Unmarshal([]byte(rq.Str(rows[0][3])), &o.blocks); err != nil {
 		return nil, fmt.Errorf("the row of %s is damaged: %w", full, err)
 	}
@@ -463,7 +464,7 @@ func (s *Server) partsOf(ctx context.Context, st, full, upload string) ([]partRo
 	}
 	out := make([]partRow, 0, len(rows))
 	for _, r := range rows {
-		p := partRow{int(rq.Int(r[0])), rq.Str(r[1]), rq.Int(r[2]), rq.Str(r[3]), rq.Int(r[4]), uint32(rq.Int(r[5]))}
+		p := partRow{int(rq.Int(r[0])), rq.Str(r[1]), rq.Int(r[2]), rq.Str(r[3]), rq.Int(r[4]), keyID(rq.Int(r[5]))}
 		if p.stored == "" { // a row written before the blocks could be sealed
 			p.stored, p.storedSize = p.sha, p.size
 		}
@@ -706,4 +707,12 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 			panic(http.ErrAbortHandler)
 		}
 	}
+}
+
+// keyID reads the id of a sealing key from a cell; a value that is not an id (negative, or over 32 bits) is 0, "not sealed".
+func keyID(n int64) uint32 {
+	if n < 0 || n > math.MaxUint32 {
+		return 0
+	}
+	return uint32(n)
 }

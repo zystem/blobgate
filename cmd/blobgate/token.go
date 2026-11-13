@@ -9,6 +9,7 @@ import (
 	"github.com/zystem/blobgate/internal/auth"
 )
 
+// #nosec G101 -- the usage text of a command that makes tokens, not a credential
 const tokenUsage = `usage: blobgate token <shard> <secret> <METHOD> <target>
 
 Prints the token of a call of the core (valid two minutes), to try the API with curl. <target> is the

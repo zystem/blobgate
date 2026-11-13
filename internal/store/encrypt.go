@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
@@ -78,7 +79,7 @@ func (c *Cipher) Seal(full, gen string, n int, plain []byte) ([]byte, error) {
 	}
 	out := make([]byte, 5, EncOverhead+len(plain))
 	out[0] = 1
-	out[1], out[2], out[3], out[4] = byte(c.Current>>24), byte(c.Current>>16), byte(c.Current>>8), byte(c.Current)
+	binary.BigEndian.PutUint32(out[1:5], c.Current)
 	nonce := make([]byte, a.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
