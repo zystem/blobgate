@@ -3,6 +3,11 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
+## [Unreleased]
+
+### Changed
+* `golang.org/x/crypto` v0.59.0 (fixes GO-2026-5932, which the program did not call); the VEX document (`vex/blobgate.openvex.json`) is now empty. A `main` that is protected for everyone and a VEX document are new in the repository.
+
 ## [0.6.0] - 2026-11-14
 
 ### Added
