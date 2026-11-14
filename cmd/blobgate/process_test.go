@@ -314,10 +314,11 @@ func TestTheReplicaThatTakesOver(t *testing.T) {
 	}
 	waitFor(t, "the other replica holds the lease", 30*time.Second, func() bool { h := holder(); return h != "" && h != first })
 	waitFor(t, "the block is given to the node that missed it", 30*time.Second, func() bool { return len(files(n2)) == 1 })
-	rows, _ := db.Query(context.Background(), rq.S("SELECT count(*) FROM storage_repair"))
-	if rq.Int(rows[0][0]) != 0 {
-		t.Fatal("the repair queue is not empty")
-	}
+	// the file is on the node a moment before the worker takes the task out of the queue: wait for that, do not read the queue at once
+	waitFor(t, "the repair queue is empty", 15*time.Second, func() bool {
+		rows, err := db.Query(context.Background(), rq.S("SELECT count(*) FROM storage_repair"))
+		return err == nil && len(rows) == 1 && rq.Int(rows[0][0]) == 0
+	})
 	if code, d := b.call("GET", "/v1/stores/main/objects/acme/r", "", map[string]string{"Range": "bytes=0-4999"}, nil); code != 206 || !bytes.Equal(d, body) {
 		t.Fatalf("read through the replica that took over: %d", code)
 	}
