@@ -26,3 +26,19 @@ func tokenCommand(args []string) int {
 	fmt.Println(auth.SignTarget(args[1], args[0], strings.ToUpper(args[2]), args[3], time.Now().Unix()))
 	return 0
 }
+
+// #nosec G101 -- the usage text of a command that makes an S3 key pair, not a credential
+const s3KeyUsage = `usage: blobgate s3-key <tenant> <secret>
+
+Prints the access key and the secret key that a tool of S3 (aws cli, rclone, mc, an SDK) uses with the S3 door
+(BLOBGATE_S3_PORT) as the tenant <tenant>, whose secret in BLOBGATE_TENANTS is <secret>. The access key is the name of
+the tenant; the secret key is made from the secret and does not give it away.`
+
+func s3KeyCommand(args []string) int {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, s3KeyUsage)
+		return 2
+	}
+	fmt.Printf("access key: %s\nsecret key: %s\n", args[0], auth.S3Secret(args[1]))
+	return 0
+}

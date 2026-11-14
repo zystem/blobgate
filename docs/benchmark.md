@@ -39,3 +39,7 @@ The tool is `cmd/bench` (the same HTTP calls the core makes, signed as the core 
 * `docs/store.md` of CiNim gives 195 / 1081 MB/s (8 MiB), 1208 / 9390 per second (64 KiB) and 54 / 372 MB/s (1 GiB) for the Nim module. The 8 MiB figures and the 1 GiB read were reproduced here (224 / 1330, 374);
   the small ones (155 and 1905 per second) and the 1 GiB write (106) were not, so the stand of that document was not this one. The comparison above is between the modules on this stand.
 * No network between the module and its nodes, no sealing of the Nim side (it has none), one machine for the load and the module.
+
+## Deduplication, 2026-11-14
+
+The cost of `dedup: "tenant"` was measured with the same tool: [deduplication.md](deduplication.md), "What it costs".

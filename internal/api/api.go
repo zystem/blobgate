@@ -202,12 +202,17 @@ func (w *statusWriter) Flush() {
 }
 
 // logged writes one structured line per request: method, store, key without the shard, status, duration, bytes. No token, no secret.
-func (s *Server) logged(h http.Handler, shim bool) http.Handler {
+func (s *Server) logged(h http.Handler, door string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
 		h.ServeHTTP(sw, r)
-		route := metrics.Route(r.Method, r.URL.Path, r.URL.Query(), shim)
+		route := ""
+		if door == "s3" {
+			route = metrics.S3Route(r.Method, r.URL.Path, r.URL.Query())
+		} else {
+			route = metrics.Route(r.Method, r.URL.Path, r.URL.Query(), door == "shim")
+		}
 		metrics.Request(route, r.Method, sw.code, time.Since(start), max(r.ContentLength, 0), sw.bytes)
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
 			return
@@ -251,7 +256,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/admin/stores", s.admin)
 	mux.HandleFunc("/v1/admin/stores/", s.admin)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found", "no such route") })
-	return s.logged(mux, false)
+	return s.logged(mux, "core")
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {

@@ -225,3 +225,47 @@ func Deduplicated(store string, size int64) {
 
 // SetsRemoved records sets of blocks that were removed because no object pointed to them.
 func SetsRemoved(n int) { setsFreed.Add(float64(n)) }
+
+// S3Route names a call of the S3 door for the metrics: one of a fixed list, never a bucket or a key.
+func S3Route(method, path string, query map[string][]string) string {
+	has := func(k string) bool { _, ok := query[k]; return ok }
+	if path == "/healthz" {
+		return "health"
+	}
+	p := strings.TrimPrefix(path, "/")
+	_, key, _ := strings.Cut(p, "/")
+	switch {
+	case p == "":
+		return "s3_buckets"
+	case key == "":
+		if method == http.MethodPost {
+			return "s3_delete_many"
+		}
+		return "s3_bucket"
+	}
+	switch method {
+	case http.MethodPut:
+		if has("uploadId") {
+			return "s3_part_put"
+		}
+		return "s3_put"
+	case http.MethodPost:
+		if has("uploads") {
+			return "s3_upload_begin"
+		}
+		return "s3_upload_complete"
+	case http.MethodGet:
+		if has("uploadId") {
+			return "s3_parts"
+		}
+		return "s3_get"
+	case http.MethodHead:
+		return "s3_head"
+	case http.MethodDelete:
+		if has("uploadId") {
+			return "s3_upload_abort"
+		}
+		return "s3_delete"
+	}
+	return "other"
+}

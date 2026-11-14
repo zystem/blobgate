@@ -12,12 +12,15 @@ helm lint --strict $C $S >/dev/null || fail "helm lint --strict failed"
 # shellcheck disable=SC2086
 helm template t $C $S > /tmp/blobgate-chart-default.yaml
 # shellcheck disable=SC2086
-helm template t $C $S --set config.metricsPort=9100 --set serviceMonitor.enabled=true --set networkPolicy.enabled=true --set config.reserveBytes=1000 \
+helm template t $C $S --set config.metricsPort=9100 --set config.s3Port=18093 --set serviceMonitor.enabled=true --set networkPolicy.enabled=true --set config.reserveBytes=1000 \
   --set config.deepCheck=true --set backup.existingSecret=bk --set backup.restoreOnEmpty=true --set backup.seconds=3600 --set replicas=3 > /tmp/blobgate-chart-full.yaml
 grep -q 'BLOBGATE_TENANTS' /tmp/blobgate-chart-default.yaml || fail "the tenants did not reach the environment"
 grep -q 'tenants: "acme=' /tmp/blobgate-chart-default.yaml || fail "the Secret has no tenants"
 helm template t $C --set rqliteUrl=http://r:4001 --set secrets.shards.001=a-secret-of-at-least-16 --set secrets.adminToken=an-admin-token-of-16c --set secrets.sealKey=a-seal-key-of-16-chars | grep -q 'tenants: "001=' || fail "secrets.shards (the old name) is not read"
 grep -q 'kind: PodDisruptionBudget' /tmp/blobgate-chart-default.yaml || fail "no PodDisruptionBudget with 2 replicas"
+grep -q 'BLOBGATE_S3_PORT' /tmp/blobgate-chart-full.yaml || fail "s3Port did not reach the environment"
+grep -q 'BLOBGATE_S3_PORT' /tmp/blobgate-chart-default.yaml && fail "the S3 door is on in the default render"
+grep -q 'name: s3' /tmp/blobgate-chart-full.yaml || fail "no s3 port in the Service"
 grep -q 'BLOBGATE_RESTORE_ON_EMPTY' /tmp/blobgate-chart-full.yaml || fail "restoreOnEmpty did not reach the environment"
 grep -q 'BLOBGATE_RESERVE_BYTES' /tmp/blobgate-chart-default.yaml && fail "a setting at its default was written into the environment"
 

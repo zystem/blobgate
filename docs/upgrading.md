@@ -16,5 +16,8 @@ What is kept across releases:
 
 A downgrade is not supported: a newer release may have added what an older one does not read (restore the backup taken before the upgrade, with the older program, if a downgrade is needed).
 
+**0.6.0** changes the `ETag` of every object once (the MD5 of the bytes for an object written in one call, `hex-N` for the others; [../CHANGELOG.md](../CHANGELOG.md)): a client that keeps ETags (a cache, a sync tool) fetches
+once more. The schema gains columns at start; nothing is to be done by hand.
+
 **0.1.0** is the first release; there is nothing to upgrade from. The Nim module that this one replaces in CiNim used other tables for objects (`storage_objects` without generations); the stores start empty, as decided
 for CiNim (D-60), and nothing is read from the old layout.

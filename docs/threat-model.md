@@ -13,6 +13,7 @@ say what exists); the backups of the database (they hold everything of the tenan
 |---|---|---|
 | the CiNim core | trusted with its tenant | the main port, with a token for each call |
 | a step's shim | semi-trusted: it runs code of a build | the shim port, with a grant for one upload or one object |
+| a tool of S3 (the S3 door, if turned on) | trusted with its tenant | the S3 port, with a Signature Version 4 made from a key pair of the tenant |
 | the operator | trusted | the admin API, the environment, the nodes' passwords |
 | a node of a store | not trusted for integrity or, with sealing, for confidentiality | what the module sends it |
 | rqlite | trusted for the records; holds no secret in the clear | the records |
@@ -26,6 +27,9 @@ Trust boundaries: network to port; the shim port to the module (a grant, nothing
 | Threat | Answer | Evidence |
 |---|---|---|
 | a call made without a token, with another's, or changed in flight | HMAC over tenant, method, target and time; refused with 401 | `internal/auth`, `TestAuthAndTenants`, fuzz test |
+| a call to the S3 door made without a signature, with another tenant's key, changed in flight, or replayed | SigV4 over method, path, query, signed headers and payload digest, within 15 minutes; the secret key is derived from the tenant's secret and is not it; every chunk of a streamed body is checked; the tenant is the access key, so a key of another tenant is another namespace | `internal/auth/sigv4_test.go` (the examples of the documentation of AWS, refusals, fuzz), `TestS3Refusals` |
+| a signed call replayed within its 15 minutes, or a presigned address kept | not answered: a signed request is valid for the time it says (a presigned address, up to 7 days), which is how SigV4 works; keep the S3 port on TLS, and change the tenant's secret to end every key | |
+| a tenant learns what bytes other tenants hold (deduplication) | the scope `tenant` (the default of `?link` and of the advice in docs/deduplication.md) finds sets of the same tenant only; `?link` is refused with the scope `store` | `TestLinkNeedsTenantScope`, `TestScopeOfASet` |
 | a shim writes or reads what it should not | a grant is for one tenant, store, key, upload and mode; the port serves only a part PUT and a range GET | `TestRefusalsOfTheShimPort` |
 | a key that leaves its place (`..`, empty segment, control characters, too long) | the key is validated and every segment is escaped to a safe file name; ids are checked against hex | `internal/layout`, fuzz test |
 | a body that is not the one named, or a part changed on its way | the digest is checked before the write is kept; refused with 400, nothing left | `TestWrongDigestLeavesNothing` |

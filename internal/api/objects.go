@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/md5" // #nosec G501 -- the ETag of S3 is the MD5 of the bytes; it is a name that clients compare, not a defence
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -122,12 +124,14 @@ func (s *Server) object(w http.ResponseWriter, r *http.Request, shard, st, key s
 		switch {
 		case has(r, "restore"):
 			s.restore(w, r, m, full)
+		case has(r, "link"):
+			s.link(w, r, m, full)
 		case has(r, "uploads"):
 			s.beginUpload(w, r, m, full, q.Get("size"))
 		case has(r, "upload"):
 			s.complete(w, r, m, full, q.Get("upload"))
 		default:
-			problem(w, 400, "invalid_request", "POST takes ?uploads, ?upload={id} or ?restore")
+			problem(w, 400, "invalid_request", "POST takes ?uploads, ?upload={id}, ?restore or ?link")
 		}
 	case http.MethodHead:
 		s.head(w, r, m, full)
@@ -277,6 +281,7 @@ type objectRow struct {
 	cid   string
 	owner string
 	plain []string
+	md5   string
 }
 
 // dir is the key whose directory holds the blocks of the object.
@@ -339,12 +344,18 @@ func readMeta(r *http.Request) (objMeta, *herr) {
 	return om, nil
 }
 
-// etag names a version of an object: what a reader can send back to ask whether it changed. It is made of the digests of the blocks as stored, so every write is a new version, and a sealed object is a new
-// version at every write even when the bytes are the same.
-func (o *objectRow) etag() string {
-	h := sha256.Sum256([]byte(strings.Join(o.blocks, "\n") + "|" + strconv.FormatInt(o.size, 10)))
-	return `"` + hex.EncodeToString(h[:16]) + `"`
+// etagOf names a version of an object: what a reader can send back to ask whether it changed. An object written in one call has the MD5 of its bytes, as an object of S3 has, so that the tools of S3 that
+// check it are content. Any other (a multipart upload, an object of an earlier release) has a name made of the digests of the blocks as stored and the number of blocks, written as the ETag of a
+// multipart object is (`hex-N`), which those tools do not check against the bytes.
+func etagOf(md5sum string, blocks []string, size int64) string {
+	if md5sum != "" {
+		return `"` + md5sum + `"`
+	}
+	h := sha256.Sum256([]byte(strings.Join(blocks, "\n") + "|" + strconv.FormatInt(size, 10)))
+	return `"` + hex.EncodeToString(h[:16]) + "-" + strconv.Itoa(max(len(blocks), 1)) + `"`
 }
+
+func (o *objectRow) etag() string { return etagOf(o.md5, o.blocks, o.size) }
 
 // setHeaders puts what is known of the object in the headers of an answer.
 func (o *objectRow) setHeaders(w http.ResponseWriter) {
@@ -373,7 +384,9 @@ func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error
 
 // getRowAny is the row whatever its state (the writes and the cleaning see the trash too).
 func (s *Server) getRowAny(ctx context.Context, st, full string) (*objectRow, error) {
-	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc, written_at, content_type, meta, deleted_at, cid FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	// one query: the object, and the set it points to (deduplication) when it points to one
+	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT o.size, o.generation, o.block_size, o.blocks, o.enc, o.written_at, o.content_type, o.meta, o.deleted_at, o.cid, o.md5, "+
+		"s.owner, s.generation, s.block_size, s.blocks, s.plain, s.enc, s.md5 FROM storage_objects o LEFT JOIN storage_sets s ON o.cid != '' AND s.store = o.store AND s.cid = o.cid WHERE o.store = ? AND o.key = ?", st, full))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
@@ -383,16 +396,16 @@ func (s *Server) getRowAny(ctx context.Context, st, full string) (*objectRow, er
 	if err := json.Unmarshal([]byte(rq.Str(rows[0][3])), &o.blocks); err != nil {
 		return nil, fmt.Errorf("the row of %s is damaged: %w", full, err)
 	}
+	o.md5 = rq.Str(rows[0][10])
 	if o.cid = rq.Str(rows[0][9]); o.cid != "" {
-		set, err := s.DB.QueryWeak(ctx, rq.S("SELECT owner, generation, block_size, blocks, plain, enc FROM storage_sets WHERE store = ? AND cid = ?", st, o.cid))
-		if err != nil {
-			return nil, err
-		}
-		if len(set) == 0 {
+		if rows[0][11] == nil {
 			return nil, fmt.Errorf("the set %s of %s is gone", o.cid, full)
 		}
-		o.owner, o.generation, o.blockSize, o.enc = rq.Str(set[0][0]), rq.Str(set[0][1]), rq.Int(set[0][2]), keyID(rq.Int(set[0][5]))
-		if json.Unmarshal([]byte(rq.Str(set[0][3])), &o.blocks) != nil || json.Unmarshal([]byte(rq.Str(set[0][4])), &o.plain) != nil {
+		o.owner, o.generation, o.blockSize, o.enc = rq.Str(rows[0][11]), rq.Str(rows[0][12]), rq.Int(rows[0][13]), keyID(rq.Int(rows[0][16]))
+		if o.md5 == "" {
+			o.md5 = rq.Str(rows[0][17])
+		}
+		if json.Unmarshal([]byte(rq.Str(rows[0][14])), &o.blocks) != nil || json.Unmarshal([]byte(rq.Str(rows[0][15])), &o.plain) != nil {
 			return nil, fmt.Errorf("the set %s of %s is damaged", o.cid, full)
 		}
 	}
@@ -433,7 +446,7 @@ func (s *Server) releaseSet(st, full string, trash bool) rq.Stmt {
 // commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
 // at once; what a node could not do stays in the queue. In a store with deduplication the blocks are the object's own until this transaction: it either makes them a set (the first object with these bytes)
 // or takes a reference on the set that is there and writes down the removal of the blocks just written. A writer never relies on a set that may be removed: the set is found or made in the same transaction.
-func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks, plain []string, enc uint32, om objMeta) error {
+func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks, plain []string, digest, md5sum string, enc uint32, om objMeta) error {
 	old, err := s.getRowAny(ctx, m.Name, full)
 	if err != nil {
 		return err
@@ -452,8 +465,9 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 	if dedup {
 		cid = cidOf(scopeOf(m, full), enc, blockSize, size, plain)
 		plj, _ := json.Marshal(plain)
-		stmts = append(stmts, rq.S("INSERT INTO storage_sets (store, cid, owner, generation, size, block_size, blocks, plain, enc, refs, zero_since, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?) "+
-			"ON CONFLICT(store, cid) DO UPDATE SET refs = refs + 1, zero_since = 0", m.Name, cid, full, gen, size, blockSize, string(bj), string(plj), enc, s.now()))
+		stmts = append(stmts, rq.S("INSERT INTO storage_sets (store, cid, owner, generation, size, block_size, blocks, plain, enc, refs, zero_since, created_at, scope, digest, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?) "+
+			"ON CONFLICT(store, cid) DO UPDATE SET refs = refs + 1, zero_since = 0, scope = excluded.scope, digest = CASE WHEN digest = '' THEN excluded.digest ELSE digest END, md5 = CASE WHEN md5 = '' THEN excluded.md5 ELSE md5 END",
+			m.Name, cid, full, gen, size, blockSize, string(bj), string(plj), enc, s.now(), scopeOf(m, full), digest, md5sum))
 		for _, n := range m.Nodes {
 			stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
 				"SELECT store, ?, ?, 'purge', ?, 0, 0, '' FROM storage_sets WHERE store = ? AND cid = ? AND NOT (owner = ? AND generation = ?) "+
@@ -462,10 +476,10 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 		ownGen, ownBlocks, ownSize, ownEnc = "", "[]", 0, 0
 	}
 	stmts = append(stmts,
-		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta, deleted_at, cid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) "+
+		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta, deleted_at, cid, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?) "+
 			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks, enc = excluded.enc, "+
-			"content_type = excluded.content_type, meta = excluded.meta, deleted_at = 0, cid = excluded.cid",
-			m.Name, full, size, s.now(), ownGen, ownSize, ownBlocks, ownEnc, om.ContentType, string(pj), cid),
+			"content_type = excluded.content_type, meta = excluded.meta, deleted_at = 0, cid = excluded.cid, md5 = excluded.md5",
+			m.Name, full, size, s.now(), ownGen, ownSize, ownBlocks, ownEnc, om.ContentType, string(pj), cid, md5sum),
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
@@ -587,16 +601,19 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 	var total int64
 	var blocks, plain []string
 	var enc uint32
+	var digest, md5sum string // of the whole body, when this write has seen it all
+	sum5 := md5.New()         // #nosec G401 -- see the import
 	switch {
 	case size == 0:
 		// an empty object has no block: the row says so
 	case size > 0 && size <= BlockSize:
-		w0, e := s.writeBlock(ctx, m, full, gen, 0, size, given, r.Body)
+		w0, e := s.writeBlock(ctx, m, full, gen, 0, size, given, io.TeeReader(r.Body, sum5))
 		if e != nil {
 			fail2(e)
 			return
 		}
-		total, blocks, plain, enc = size, []string{w0.stored}, []string{w0.plain}, w0.enc
+		total, blocks, plain, enc, digest = size, []string{w0.stored}, []string{w0.plain}, w0.enc, w0.plain
+		md5sum = hex.EncodeToString(sum5.Sum(nil))
 	default:
 		buf := make([]byte, BlockSize)
 		whole := sha256.New()
@@ -610,6 +627,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 					return
 				}
 				whole.Write(buf[:k])
+				sum5.Write(buf[:k])
 				sum := sha256.Sum256(buf[:k])
 				w0, e := s.writeBlock(ctx, m, full, gen, n, int64(k), hex.EncodeToString(sum[:]), bytes.NewReader(buf[:k]))
 				if e != nil {
@@ -627,7 +645,8 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 				return
 			}
 		}
-		if given != "" && hex.EncodeToString(whole.Sum(nil)) != given {
+		digest, md5sum = hex.EncodeToString(whole.Sum(nil)), hex.EncodeToString(sum5.Sum(nil))
+		if given != "" && digest != given {
 			s.purge(ctx, m, full, gen)
 			fail2(&herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"})
 			return
@@ -640,12 +659,19 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 			return
 		}
 	}
+	if want := r.Header.Get("Content-MD5"); want != "" && size != 0 { // the writer's own check of the body, as S3 has it
+		if raw, err := base64.StdEncoding.DecodeString(want); err != nil || hex.EncodeToString(raw) != md5sum {
+			s.purge(ctx, m, full, gen)
+			fail2(&herr{400, "md5_mismatch", "the body is not the one Content-MD5 names"})
+			return
+		}
+	}
 	s.at("put:after-block")
 	blockSize := int64(BlockSize)
 	if size > 0 && size <= BlockSize {
 		blockSize = size
 	}
-	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, plain, enc, om); err != nil {
+	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, plain, digest, md5sum, enc, om); err != nil {
 		s.purge(ctx, m, full, gen)
 		fail(w, err)
 		return
@@ -887,7 +913,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		om.ContentType = rq.Str(rows[0][0])
 		_ = json.Unmarshal([]byte(rq.Str(rows[0][1])), &om.Pairs)
 	}
-	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, enc, om); err != nil {
+	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, "", "", enc, om); err != nil {
 		fail(w, err)
 		return
 	}

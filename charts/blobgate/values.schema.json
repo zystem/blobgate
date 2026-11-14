@@ -20,6 +20,7 @@
       "properties": {
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "shimPort": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "s3Port": {"type": "integer", "minimum": 0, "maximum": 65535},
         "metricsPort": {"type": "integer", "minimum": 0, "maximum": 65535}
       }
     }

@@ -27,6 +27,7 @@ secrets:
 config:
   port: 18090
   shimPort: 18091        # the port for step shims; 0: none
+  s3Port: 0              # the port of the S3 door (docs/s3.md); 0: none
   metricsPort: 0         # a port with /metrics and no token, for a scraper inside the cluster; 0: none
   threads: 0             # reads and sealed writes at once (8)
   reserveBytes: 0        # room kept free in a store (256 MiB)

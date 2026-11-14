@@ -9,8 +9,8 @@ A storage service that keeps blocks of data for many tenants on any number of se
 Use it when you need an HTTP API for objects (put, read a range, delete, multipart) over storage that you do not control or that is of different kinds, with a copy on more than one server, and you can run
 an [rqlite](https://rqlite.io) next to it (it keeps its records there and nothing on a disk of its own).
 
-Do not use it as a general S3 server (the API is the small one of `internal/api/openapi.yaml`, made for a service that keeps its own metadata and uses this one for the bytes), when one bucket of one provider is enough (use that provider), or when you need
-to list the contents of a store (it never lists; its inventory is the database).
+Do not use it as a full S3 server (it answers the calls that the tools of S3 make for objects, listings and multipart uploads, not the policies, versions, ACLs or notifications: [docs/s3-reference.md](docs/s3-reference.md)), or when one bucket
+of one provider is enough (use that provider).
 
 ## The parts
 
@@ -110,7 +110,7 @@ the nodes, where they stay until you remove them.
 * **node**: one server that rclone talks to; a block is written to every node of its store.
 * **block**: a file of at most 8 MiB on a node; an object is one or more blocks.
 * **generation**: one write of an object; its blocks lie under their own path and are never overwritten.
-* **tenant**: a CiNim tenant group; its number is the first part of every key, and each has its own secret.
+* **tenant**: an owner of keys (for CiNim, a tenant group); its name is the first part of every key, and each has its own secret. In the S3 door it is the access key.
 * **grant**: a token the core gives a step's shim to put the parts of one upload or read one object on the port for shims.
 * **repair**: copying a block to a node that missed it, from a node that has it, checked by its digest.
 
@@ -120,7 +120,7 @@ the nodes, where they stay until you remove them.
 |---|---|
 | know how it keeps data, and what a crash leaves | [docs/data-lifecycle.md](docs/data-lifecycle.md), [docs/rclone-probe.md](docs/rclone-probe.md) |
 | set it up | [docs/configuration.md](docs/configuration.md) (every setting), [docs/encryption.md](docs/encryption.md), [docs/deduplication.md](docs/deduplication.md) |
-| call it | [internal/api/openapi.yaml](internal/api/openapi.yaml), served at `/v1/openapi.yaml` |
+| call it | [internal/api/openapi.yaml](internal/api/openapi.yaml), served at `/v1/openapi.yaml`; from Go: [docs/go-client.md](docs/go-client.md); with a tool of S3: [docs/s3.md](docs/s3.md), [docs/s3-reference.md](docs/s3-reference.md) |
 | keep it safe | [docs/backup.md](docs/backup.md) |
 | watch it | [docs/metrics.md](docs/metrics.md) |
 | judge its speed | [docs/benchmark.md](docs/benchmark.md) |

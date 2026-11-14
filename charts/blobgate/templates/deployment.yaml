@@ -37,6 +37,9 @@ spec:
             {{- if .Values.config.shimPort }}
             - {name: shim, containerPort: {{ .Values.config.shimPort }}}
             {{- end }}
+            {{- if .Values.config.s3Port }}
+            - {name: s3, containerPort: {{ .Values.config.s3Port }}}
+            {{- end }}
             {{- if .Values.config.metricsPort }}
             - {name: metrics, containerPort: {{ .Values.config.metricsPort }}}
             {{- end }}
@@ -44,6 +47,9 @@ spec:
             - {name: BLOBGATE_RQLITE_URL, value: {{ .Values.rqliteUrl | quote }}}
             - {name: BLOBGATE_PORT, value: {{ .Values.config.port | toString | quote }}}
             - {name: BLOBGATE_SHIM_PORT, value: {{ .Values.config.shimPort | toString | quote }}}
+            {{- if .Values.config.s3Port }}
+            - {name: BLOBGATE_S3_PORT, value: {{ .Values.config.s3Port | toString | quote }}}
+            {{- end }}
             # the key is `tenants`; a Secret of the first version has `shards`: either is read (a variable whose key is not there is left out)
             - name: BLOBGATE_TENANTS
               valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: tenants, optional: true}}
