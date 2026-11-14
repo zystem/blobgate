@@ -40,7 +40,7 @@ type Config struct {
 	AdminToken   string
 	Reserve      int64         // bytes kept free in a store (0: space.DefaultReserve)
 	MaxObject    int64         // the most bytes an object may hold; 0: no limit besides the room
-	MaxReads     int           // reads of blocks at once (0: 8): each holds one block in memory
+	MaxReads     int           // reads of blocks at once (0: 4): each holds one block in memory
 	UploadTTL    time.Duration // an upload older than this is swept (0: 24 h)
 	Now          func() time.Time
 	// CrashAt, if set, is called at the named points of a write or a delete (`put:after-uploads-row`, `put:after-block`, `part:after-block`, `complete:before-commit`, `commit:before`,
@@ -64,7 +64,7 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 		cfg.Reserve = space.DefaultReserve
 	}
 	if cfg.MaxReads <= 0 {
-		cfg.MaxReads = 8
+		cfg.MaxReads = 4
 	}
 	if cfg.UploadTTL == 0 {
 		cfg.UploadTTL = 24 * time.Hour

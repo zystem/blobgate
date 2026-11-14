@@ -26,5 +26,5 @@ Run as a process with SIGKILL (`cmd/blobgate/process_test.go`): a writer killed 
 Not built yet: the Nim process tests against this binary (they start Caddy nodes, which this module does not use); tests with servers other than SFTPGo and Garage (the error words of a full disk are matched by text and are known only from the documentation of the protocols); speed and memory;
 the pipeline (CiNim's `.ci/pipeline.lua`) and the chart; the end of the pass on SIGTERM waits for the pass in progress (a long pass delays the stop).
 
-Known limits: a read holds one block (at most 8 MiB) in memory for each read going on (`BLOBGATE_THREADS`, default 8, bounds them); node names with a difference of case only meet on a node that folds case; a node that is merely
+Known limits: a read holds one block (at most 8 MiB) in memory for each read going on (`BLOBGATE_THREADS`, default 4, bounds them); node names with a difference of case only meet on a node that folds case; a node that is merely
 unreachable during the check gets a `copy` task like one that lost its disk, and the task is put off with a growing pause.

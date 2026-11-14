@@ -6,6 +6,7 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 ## [Unreleased]
 
 ### Changed
+* **`BLOBGATE_THREADS` is 4 by default** (was 8): at most four blocks are held in memory at once by reads and sealed writes (up to 32 MiB instead of 64 MiB); more reads at one time wait for a place. Set `BLOBGATE_THREADS=8` for the old value.
 * `golang.org/x/crypto` v0.59.0 (fixes GO-2026-5932, which the program did not call); the VEX document (`vex/blobgate.openvex.json`) is now empty. A `main` that is protected for everyone and a VEX document are new in the repository.
 
 ## [0.6.0] - 2026-11-14
