@@ -119,7 +119,7 @@ the nodes, where they stay until you remove them.
 | You want to | Read |
 |---|---|
 | know how it keeps data, and what a crash leaves | [docs/data-lifecycle.md](docs/data-lifecycle.md), [docs/rclone-probe.md](docs/rclone-probe.md) |
-| set it up | [docs/configuration.md](docs/configuration.md) (every setting), [docs/encryption.md](docs/encryption.md) |
+| set it up | [docs/configuration.md](docs/configuration.md) (every setting), [docs/encryption.md](docs/encryption.md), [docs/deduplication.md](docs/deduplication.md) |
 | call it | [internal/api/openapi.yaml](internal/api/openapi.yaml), served at `/v1/openapi.yaml` |
 | keep it safe | [docs/backup.md](docs/backup.md) |
 | watch it | [docs/metrics.md](docs/metrics.md) |

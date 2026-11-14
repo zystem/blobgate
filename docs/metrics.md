@@ -15,6 +15,9 @@ Reference page. `GET /metrics` on the main port with the admin token, or on `BLO
 | `blobgate_repair_tasks_total` | counter | result (`done`, `failed`) | Tasks worked. |
 | `blobgate_check_tasks_total` | counter | | Copy tasks made by the check of the inventory. |
 | `blobgate_swept_uploads_total` | counter | | Uploads that never ended whose blocks were removed. |
+| `blobgate_dedup_objects_total` | counter | `store` | Objects written whose bytes were in the store already (they took a reference on the blocks that were there). |
+| `blobgate_dedup_saved_bytes_total` | counter | `store` | Bytes of those objects: what was not kept a second time. |
+| `blobgate_sets_removed_total` | counter | | Sets of blocks that no object pointed to any more, whose blocks were removed. |
 | `blobgate_objects` | gauge | store | Objects in the inventory. |
 | `blobgate_lease_held` | gauge | name | 1 while this replica holds the lease of a job (`repair`). |
 | `blobgate_last_backup_timestamp_seconds` | gauge | | When this replica wrote the last backup of the database. |

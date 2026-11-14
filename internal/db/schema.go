@@ -28,6 +28,12 @@ var ddl = []string{
 	// an upload that has begun and not been completed or aborted: what the sweep of orphan blocks looks at
 	`CREATE TABLE IF NOT EXISTS storage_uploads (
        store TEXT NOT NULL, key TEXT NOT NULL, upload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (store, key, upload))`,
+	// the blocks of objects that are the same bytes (deduplication): one row, one directory of blocks on the nodes, `refs` objects that point to it. Written in the transaction of the object that
+	// takes or leaves the reference, so that the count is never ahead of or behind the rows; a set with no reference is removed by the worker.
+	`CREATE TABLE IF NOT EXISTS storage_sets (
+       store TEXT NOT NULL, cid TEXT NOT NULL, owner TEXT NOT NULL, generation TEXT NOT NULL, size INTEGER NOT NULL, block_size INTEGER NOT NULL, blocks TEXT NOT NULL, plain TEXT NOT NULL,
+       enc INTEGER NOT NULL DEFAULT 0, refs INTEGER NOT NULL DEFAULT 0, zero_since INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY (store, cid))`,
+	`CREATE INDEX IF NOT EXISTS storage_sets_free ON storage_sets (refs, zero_since)`,
 	// the limits of a tenant in a store (0: no limit); what a tenant holds is counted from storage_objects
 	`CREATE TABLE IF NOT EXISTS storage_quotas (
        store TEXT NOT NULL, tenant TEXT NOT NULL, max_bytes INTEGER NOT NULL DEFAULT 0, max_objects INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (store, tenant))`,
@@ -44,6 +50,7 @@ var columns = [][3]string{
 	{"storage_objects", "content_type", "TEXT NOT NULL DEFAULT ''"}, // as the writer named it
 	{"storage_objects", "meta", "TEXT NOT NULL DEFAULT '{}'"},       // the metadata the writer gave (a JSON object of text)
 	{"storage_objects", "deleted_at", "INTEGER NOT NULL DEFAULT 0"}, // when it was put in the trash (soft delete); 0: it is there
+	{"storage_objects", "cid", "TEXT NOT NULL DEFAULT ''"},          // the set of blocks it points to (deduplication); '': its own blocks, in `generation`
 	{"storage_uploads", "content_type", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_uploads", "meta", "TEXT NOT NULL DEFAULT '{}'"},
 	{"storage_parts", "stored_sha256", "TEXT NOT NULL DEFAULT ''"}, // of the block as stored (sealed); sha256 stays that of what the shim sent, which the core compares

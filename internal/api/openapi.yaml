@@ -106,6 +106,7 @@ components:
         space_url: {type: string}
         repair_pending: {type: integer, description: only for a mirror}
         soft_delete_seconds: {type: integer}
+        dedup: {type: string}
     StoreSettings:
       type: object
       description: the secret is sealed at rest and never returned
@@ -130,6 +131,7 @@ components:
           properties:
             key_id: {type: integer, minimum: 1}
             keys: {type: object, additionalProperties: {type: string}}
+        dedup: {type: string, enum: ["", tenant, store], default: "", description: "objects with the same bytes keep one set of blocks, inside one tenant (`tenant`) or the whole store (`store`); off by default (docs/deduplication.md)"}
         soft_delete_seconds: {type: integer, minimum: 0, maximum: 31536000, description: "0 (the default) deletes at once; above 0 a deleted object stays in the trash for that long and can be restored (docs/data-lifecycle.md)"}
         default: {type: boolean}
   responses:
@@ -402,7 +404,7 @@ paths:
         "200": {description: "{deleted: true}"}
   /v1/admin/stores/{name}:usage:
     get:
-      summary: "what every tenant holds in the store: {store, tenants: [{tenant, objects, bytes, trash_objects, trash_bytes, max_bytes, max_objects}]}"
+      summary: "what every tenant holds in the store: {store, tenants: [{tenant, objects, bytes, trash_objects, trash_bytes, max_bytes, max_objects}], dedup: {sets, stored_bytes, objects, logical_bytes}}; `dedup` is there when the store has sets of shared blocks"
       security: [{adminToken: []}]
       parameters: [{name: name, in: path, required: true, schema: {type: string}}]
       responses:

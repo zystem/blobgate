@@ -192,7 +192,7 @@ func (r *Registry) Forget(ctx context.Context, name string, force bool) (string,
 		}
 	}
 	_, err = r.DB.Exec(ctx, true, rq.S("DELETE FROM storage_stores WHERE name = ?", name), rq.S("DELETE FROM storage_objects WHERE store = ?", name),
-		rq.S("DELETE FROM storage_repair WHERE store = ?", name), rq.S("DELETE FROM storage_parts WHERE store = ?", name), rq.S("DELETE FROM storage_uploads WHERE store = ?", name))
+		rq.S("DELETE FROM storage_repair WHERE store = ?", name), rq.S("DELETE FROM storage_parts WHERE store = ?", name), rq.S("DELETE FROM storage_uploads WHERE store = ?", name), rq.S("DELETE FROM storage_sets WHERE store = ?", name))
 	r.mu.Lock()
 	delete(r.cache, name)
 	r.mu.Unlock()
@@ -266,7 +266,7 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 // Open makes the Mirror of settings (the admin call tries them before it keeps them).
 func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, error) {
 	specs := cfg.Specs(sec)
-	m := &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL, SoftDelete: time.Duration(cfg.SoftDeleteSeconds) * time.Second}
+	m := &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL, SoftDelete: time.Duration(cfg.SoftDeleteSeconds) * time.Second, Dedup: cfg.Dedup}
 	if cfg.Encrypt != nil || len(sec.EncKeys) > 0 {
 		var cur uint32
 		if cfg.Encrypt != nil {

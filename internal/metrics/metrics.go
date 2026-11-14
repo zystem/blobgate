@@ -32,12 +32,15 @@ var (
 	refused    = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_refused_total", Help: "Writes refused, by reason (store_full)."}, []string{"reason"})
 	freeBytes  = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "blobgate_store_free_bytes", Help: "Room the store said it had at the last write (only stores that say)."}, []string{"store"})
 	totalBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "blobgate_store_total_bytes", Help: "Size the store said it had at the last write."}, []string{"store"})
+	dedupObjs  = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_dedup_objects_total", Help: "Objects written whose bytes were in the store already (they took a reference on the blocks that were there), by store."}, []string{"store"})
+	dedupBytes = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_dedup_saved_bytes_total", Help: "Bytes of those objects: what was not kept a second time, by store."}, []string{"store"})
+	setsFreed  = prometheus.NewCounter(prometheus.CounterOpts{Name: "blobgate_sets_removed_total", Help: "Sets of blocks that no object pointed to any more, whose blocks were removed."})
 	leaseHeld  = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "blobgate_lease_held", Help: "1 while this replica holds the lease of a job (repair, backup)."}, []string{"name"})
 	lastBackup = prometheus.NewGauge(prometheus.GaugeOpts{Name: "blobgate_last_backup_timestamp_seconds", Help: "When the last backup of the database by this replica was written."})
 )
 
 func init() {
-	Registry.MustRegister(requests, duration, bytesTotal, nodeErrors, repairs, swept, checkMade, refused, freeBytes, totalBytes, leaseHeld, lastBackup,
+	Registry.MustRegister(requests, duration, bytesTotal, nodeErrors, repairs, swept, dedupObjs, dedupBytes, setsFreed, checkMade, refused, freeBytes, totalBytes, leaseHeld, lastBackup,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
@@ -213,3 +216,12 @@ func Route(method, path string, query map[string][]string, shim bool) string {
 func RegisterDB(db *rq.Client, ttl time.Duration) {
 	Registry.MustRegister(&DBCollector{DB: db, TTL: ttl})
 }
+
+// Deduplicated records an object whose bytes were in the store already.
+func Deduplicated(store string, size int64) {
+	dedupObjs.WithLabelValues(store).Inc()
+	dedupBytes.WithLabelValues(store).Add(float64(size))
+}
+
+// SetsRemoved records sets of blocks that were removed because no object pointed to them.
+func SetsRemoved(n int) { setsFreed.Add(float64(n)) }

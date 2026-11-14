@@ -33,6 +33,7 @@ type storeBody struct {
 	MinAcks           int        `json:"min_acks"`
 	Default           bool       `json:"default"`
 	SoftDeleteSeconds int        `json:"soft_delete_seconds"`
+	Dedup             string     `json:"dedup"`
 	// Encryption seals the blocks written from now on; keys keeps every key an object was ever sealed with (id -> text), key_id is the one new blocks use
 	Encryption *struct {
 		KeyID uint32            `json:"key_id"`
@@ -41,7 +42,7 @@ type storeBody struct {
 }
 
 func (b storeBody) parse() (store.Config, store.Secrets, error) {
-	cfg := store.Config{Kind: b.Kind, MinAcks: b.MinAcks, SpaceURL: b.SpaceURL, SoftDeleteSeconds: b.SoftDeleteSeconds}
+	cfg := store.Config{Kind: b.Kind, MinAcks: b.MinAcks, SpaceURL: b.SpaceURL, SoftDeleteSeconds: b.SoftDeleteSeconds, Dedup: b.Dedup}
 	var sec store.Secrets
 	if cfg.Kind == "" {
 		cfg.Kind = "s3"
@@ -118,7 +119,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 				enc = map[string]any{"key_id": e.Cfg.Encrypt.KeyID}
 			}
 			items = append(items, map[string]any{"encryption": enc, "name": e.Name, "kind": e.Cfg.Kind, "default": e.Default, "endpoint": e.Cfg.Endpoint, "region": e.Cfg.Region,
-				"bucket": e.Cfg.Bucket, "access_key_id": e.Cfg.KeyID, "nodes": nodes, "min_acks": acks, "soft_delete_seconds": e.Cfg.SoftDeleteSeconds, "objects": n, "space_url": e.Cfg.SpaceURL, "repair_pending": pend})
+				"bucket": e.Cfg.Bucket, "access_key_id": e.Cfg.KeyID, "nodes": nodes, "min_acks": acks, "soft_delete_seconds": e.Cfg.SoftDeleteSeconds, "dedup": e.Cfg.Dedup, "objects": n, "space_url": e.Cfg.SpaceURL, "repair_pending": pend})
 		}
 		writeJSON(w, 200, map[string]any{"stores": items})
 		return

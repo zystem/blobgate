@@ -5,7 +5,8 @@ minor release; anything older gets none. A new patch release (0.2.1 after 0.2.0)
 
 | Release | Date | Status |
 |---|---|---|
-| **0.4.0** | 2026-11-13 | supported: the latest |
+| **0.5.0** | 2026-11-14 | supported: the latest |
+| 0.4.0 | 2026-11-13 | not supported: update |
 | 0.3.0 | 2026-11-13 | previous minor: High and Critical fixes only, **until 2026-12-13** |
 | 0.2.0 | 2026-11-13 | not supported: update |
 | 0.1.0 | 2026-11-13 | not supported: built with Go 1.26.0, which has GO-2026-6859 (net/http): update |

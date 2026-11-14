@@ -17,7 +17,7 @@ What the project intends to do and not do in the next year. It is a plan of two 
 
 ## Considers (no date)
 
-- Content-addressed blocks (the same block of a cache is stored once): saves room, and brings back the problem of collecting blocks that nothing refers to, which the present layout avoids.
+- Deduplication below the object (the same block in different objects, blocks cut by content), and a check before the write so that a copy is not sent at all: the whole-object kind is built (0.5.0, docs/deduplication.md).
 - Packing small blocks into larger files for nodes that are slow with many small files (FTP).
 - A bundled node (Garage) in the chart.
 

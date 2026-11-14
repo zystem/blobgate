@@ -139,6 +139,7 @@ func (w *Worker) Pass(ctx context.Context) {
 	swept := w.SweepPass(ctx)
 	metrics.Swept(swept)
 	swept += w.TrashPass(ctx)
+	swept += w.SetPass(ctx)
 	if done+failed+swept > 0 {
 		w.cfg.Log.Info("maintenance", "repaired", done, "failed", failed, "swept_uploads", swept)
 	}
@@ -242,6 +243,21 @@ func (w *Worker) do(ctx context.Context, t task) error {
 
 // expected is the digest and the size block n of the generation must have: from the object's row if the generation is the current one, else from the parts of the upload it belongs to.
 func (w *Worker) expected(ctx context.Context, st, full, gen string, n int) (sha string, size int64, found bool, err error) {
+	sets, err := w.DB.Query(ctx, rq.S("SELECT size, block_size, blocks, enc FROM storage_sets WHERE store = ? AND owner = ? AND generation = ?", st, full, gen))
+	if err != nil {
+		return "", 0, false, err
+	}
+	if len(sets) == 1 { // the blocks belong to a set of blocks (deduplication)
+		var blocks []string
+		if json.Unmarshal([]byte(rq.Str(sets[0][2])), &blocks) == nil && n < len(blocks) {
+			size = min(rq.Int(sets[0][1]), rq.Int(sets[0][0])-int64(n)*rq.Int(sets[0][1]))
+			if rq.Int(sets[0][3]) != 0 {
+				size += store.EncOverhead
+			}
+			return blocks[n], size, true, nil
+		}
+		return "", 0, false, nil
+	}
 	rows, err := w.DB.Query(ctx, rq.S("SELECT generation, size, block_size, blocks, enc FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil {
 		return "", 0, false, err
@@ -339,23 +355,47 @@ func (w *Worker) CheckPass(ctx context.Context) int {
 			if gen == "" || json.Unmarshal([]byte(rq.Str(r[4])), &blocks) != nil {
 				continue
 			}
-			for i, sha := range blocks {
-				size := min(bs, total-int64(i)*bs)
-				if rq.Int(r[5]) != 0 {
-					size += store.EncOverhead
-				}
-				rel := layout.BlockPath(full, gen, i)
-				for _, n := range m.Nodes {
-					if n.Verify(ctx, rel, size, sha, w.cfg.Deep) == nil {
-						continue
-					}
-					w.queueCopy(ctx, e.Name, layout.BlockKey(full, gen, i), n.ID)
-					made++
-				}
-				if w.cfg.Deep && w.cfg.DeepBytesPS > 0 {
-					time.Sleep(time.Duration(float64(size) * float64(len(m.Nodes)) / float64(w.cfg.DeepBytesPS) * float64(time.Second)))
-				}
+			made += w.checkBlocks(ctx, m, e.Name, full, gen, total, bs, blocks, rq.Int(r[5]) != 0)
+		}
+		// the sets of blocks of the objects that share them (deduplication), in slices of their own
+		sets, err := w.DB.Query(ctx, rq.S("SELECT cid, owner, size, generation, block_size, blocks, enc FROM storage_sets WHERE store = ? AND cid > ? ORDER BY cid LIMIT ?", e.Name, w.cursor[e.Name+"#sets"], w.cfg.CheckSlice))
+		if err != nil {
+			continue
+		}
+		if len(sets) == 0 {
+			w.cursor[e.Name+"#sets"] = ""
+			continue
+		}
+		w.cursor[e.Name+"#sets"] = rq.Str(sets[len(sets)-1][0])
+		for _, r := range sets {
+			var blocks []string
+			if json.Unmarshal([]byte(rq.Str(r[5])), &blocks) != nil {
+				continue
 			}
+			made += w.checkBlocks(ctx, m, e.Name, rq.Str(r[1]), rq.Str(r[3]), rq.Int(r[2]), rq.Int(r[4]), blocks, rq.Int(r[6]) != 0)
+		}
+	}
+	return made
+}
+
+// checkBlocks asks every node of the store for the blocks of one generation under one key, and makes a `copy` task of what is missing or differs.
+func (w *Worker) checkBlocks(ctx context.Context, m *store.Mirror, st, key, gen string, total, bs int64, blocks []string, sealed bool) int {
+	made := 0
+	for i, sha := range blocks {
+		size := min(bs, total-int64(i)*bs)
+		if sealed {
+			size += store.EncOverhead
+		}
+		rel := layout.BlockPath(key, gen, i)
+		for _, n := range m.Nodes {
+			if n.Verify(ctx, rel, size, sha, w.cfg.Deep) == nil {
+				continue
+			}
+			w.queueCopy(ctx, st, layout.BlockKey(key, gen, i), n.ID)
+			made++
+		}
+		if w.cfg.Deep && w.cfg.DeepBytesPS > 0 {
+			time.Sleep(time.Duration(float64(size) * float64(len(m.Nodes)) / float64(w.cfg.DeepBytesPS) * float64(time.Second)))
 		}
 	}
 	return made
@@ -377,7 +417,7 @@ func (w *Worker) TrashPass(ctx context.Context) int {
 		if err != nil {
 			continue
 		}
-		rows, err := w.DB.Query(ctx, rq.S("SELECT key, generation FROM storage_objects WHERE store = ? AND deleted_at > 0 AND deleted_at <= ? LIMIT 100", e.Name, w.now()-int64(e.Cfg.SoftDeleteSeconds)))
+		rows, err := w.DB.Query(ctx, rq.S("SELECT key, generation, cid FROM storage_objects WHERE store = ? AND deleted_at > 0 AND deleted_at <= ? LIMIT 100", e.Name, w.now()-int64(e.Cfg.SoftDeleteSeconds)))
 		if err != nil {
 			continue
 		}
@@ -385,8 +425,13 @@ func (w *Worker) TrashPass(ctx context.Context) int {
 			if ctx.Err() != nil || !w.stillMine(ctx) {
 				return removed
 			}
-			key, gen := rq.Str(r[0]), rq.Str(r[1])
+			key, gen, cid := rq.Str(r[0]), rq.Str(r[1]), rq.Str(r[2])
 			var stmts []rq.Stmt
+			if cid != "" {
+				// the blocks belong to a set: the reference is given back, and the set is removed by SetPass when nothing points to it
+				stmts = append(stmts, rq.S("UPDATE storage_sets SET refs = refs - 1, zero_since = CASE WHEN refs - 1 <= 0 THEN ? ELSE 0 END WHERE store = ? AND cid = ? AND EXISTS "+
+					"(SELECT 1 FROM storage_objects WHERE store = ? AND key = ? AND cid = ? AND deleted_at > 0)", w.now(), e.Name, cid, e.Name, key, cid))
+			}
 			if gen != "" {
 				for _, n := range m.Nodes {
 					stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
@@ -394,7 +439,7 @@ func (w *Worker) TrashPass(ctx context.Context) int {
 						"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, key, gen))
 				}
 			}
-			stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ? AND generation = ? AND deleted_at > 0", e.Name, key, gen))
+			stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ? AND generation = ? AND cid = ? AND deleted_at > 0", e.Name, key, gen, cid))
 			if _, err := w.DB.Exec(ctx, true, stmts...); err != nil {
 				continue
 			}
@@ -413,5 +458,58 @@ func (w *Worker) TrashPass(ctx context.Context) int {
 			}
 		}
 	}
+	return removed
+}
+
+// SetPass removes the sets of blocks that no object points to any more (the last object was deleted, replaced or emptied from the trash). For every node the removal is written down in the
+// transaction that removes the row of the set, and only if no object has taken a reference on it since (a write with the same bytes does so in its own transaction, so the two never cross); then the
+// blocks are removed at once. It returns how many sets it removed.
+func (w *Worker) SetPass(ctx context.Context) int {
+	list, err := w.Reg.List(ctx)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, e := range list {
+		rows, err := w.DB.Query(ctx, rq.S("SELECT cid, owner, generation FROM storage_sets WHERE store = ? AND refs <= 0 AND zero_since <= ? LIMIT 100", e.Name, w.now()))
+		if err != nil || len(rows) == 0 {
+			continue
+		}
+		m, err := w.Reg.Load(ctx, e.Name)
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			if ctx.Err() != nil || !w.stillMine(ctx) {
+				return removed
+			}
+			cid, owner, gen := rq.Str(r[0]), rq.Str(r[1]), rq.Str(r[2])
+			var stmts []rq.Stmt
+			for _, n := range m.Nodes {
+				stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
+					"SELECT store, owner || '~' || generation, ?, 'purge', ?, 0, 0, '' FROM storage_sets WHERE store = ? AND cid = ? AND refs <= 0 "+
+					"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, cid))
+			}
+			stmts = append(stmts, rq.S("DELETE FROM storage_sets WHERE store = ? AND cid = ? AND refs <= 0", e.Name, cid))
+			if _, err := w.DB.Exec(ctx, true, stmts...); err != nil {
+				continue
+			}
+			// the blocks are removed only if the row is gone: a set that was taken again between the query and the transaction is not touched (its task was not written either)
+			if again, err := w.DB.Query(ctx, rq.S("SELECT count(*) FROM storage_sets WHERE store = ? AND cid = ? AND owner = ? AND generation = ?", e.Name, cid, owner, gen)); err != nil || len(again) != 1 || rq.Int(again[0][0]) != 0 {
+				continue
+			}
+			removed++
+			failed := map[string]bool{}
+			for _, n := range m.DeleteDir(ctx, layout.BlockDir(owner, gen)) {
+				failed[n.ID] = true
+			}
+			for _, n := range m.Nodes {
+				if !failed[n.ID] {
+					_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", e.Name, layout.DirKey(owner, gen), n.ID))
+				}
+			}
+		}
+	}
+	metrics.SetsRemoved(removed)
 	return removed
 }

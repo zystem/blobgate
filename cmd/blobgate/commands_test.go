@@ -176,7 +176,7 @@ func TestRestoreOnEmptyAndBackupLoop(t *testing.T) {
 		t.Fatalf("the loop wrote no backup: %d %s", code, out)
 	}
 	// the database is lost; the module starts and fills it
-	for _, tb := range []string{"storage_stores", "storage_objects", "storage_repair", "storage_parts", "storage_uploads", "storage_lease", "storage_quotas"} {
+	for _, tb := range []string{"storage_stores", "storage_objects", "storage_repair", "storage_parts", "storage_uploads", "storage_lease", "storage_quotas", "storage_sets"} {
 		_, _ = c.Exec(ctx, false, rq.S("DROP TABLE "+tb))
 	}
 	restoreIfEmpty(ctx, rqURL, log)

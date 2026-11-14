@@ -21,6 +21,8 @@ tried at once, and the task is taken out of the queue by the node that did it. N
 | the transaction is done, the old generation is not yet removed | the old blocks, with a `purge` task for every node | the repair pass |
 | a delete: the transaction is done, the blocks are not yet removed | the blocks, with a `purge` task for every node | the repair pass |
 | a soft delete: the row is marked as deleted, the blocks are not touched | the object in the trash, restorable (`delete:after-trash`) | the worker, when `soft_delete_seconds` is over: one transaction writes the `purge` tasks and removes the row, only if the object is still the same and still in the trash (a restore that came first wins) |
+| a write in a store with deduplication that found its bytes in the store: the transaction is done | the blocks it wrote, with a `purge` task for every node | the repair pass (docs/deduplication.md) |
+| the last object of a set of blocks is deleted | the set with `refs = 0` | the worker's pass: one transaction removes the row and writes down the removal of the blocks |
 | an abort: the blocks are removed, the rows are not | the rows | the sweep |
 
 A node that cannot take a write while the others do (with `min_acks` below the number of nodes) gets a `copy` task; the repair pass reads the block from a node that has it, checks its SHA-256 against

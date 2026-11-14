@@ -77,6 +77,7 @@ A store is `{"kind": "mirror", "nodes": [{"remote": ":ftp,host=h,user=u:/path", 
 
 * `min_acks`: nodes that must confirm a write; `0` (the default) is every node. A node that missed it gets the block from the repair pass.
 * `secrets` of a node: options of the rclone backend that are passwords or keys; they are sealed in the database and never shown.
+* `dedup`: `""` (the default, off), `"tenant"` or `"store"`: objects with the same bytes share one set of blocks, inside one tenant or the whole store (docs/deduplication.md). Read by a replica within two seconds; what is written stays as it is.
 * `soft_delete_seconds`: `0` (the default) deletes at once. Above `0` (at most one year) a deleted object goes to the trash: it is hidden from reads and from the list, its blocks stay, and `POST .../objects/<key>?restore`
   brings it back as it was; a new write of the key replaces it; `DELETE ...?purge` removes it at once; the worker removes it when the time is over. A change is read by the replicas within two seconds.
 * Quotas: `PUT /v1/admin/quotas/<store>/<tenant>` with `{"max_bytes": n, "max_objects": n}` (`0`, the default, is no limit; applied at once, by every replica). A write that would pass the limit is
