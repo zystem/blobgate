@@ -21,6 +21,7 @@ accepted; `blobgate token` makes `v2`.
 | `BLOBGATE_TLS_CERT_FILE`, `BLOBGATE_TLS_KEY_FILE` | none: plain HTTP | Both set: every port (the main one, the one for shims, the metrics one) serves TLS 1.2 or later with this certificate and key (PEM); the files are read again when they change, so a renewed certificate needs no restart. Either one alone stops the program. **Dangerous** to leave off when the port can be reached from outside the cluster: the tokens are signed per call but the bodies are not hidden. |
 | `BLOBGATE_PORT` | `18090` | The port of the core's calls, the admin API, `/healthz`, `/readyz`, `/metrics`, `/v1/openapi.yaml`. |
 | `BLOBGATE_SHIM_PORT` | `18091` | The port for step shims (plain HTTP, grants only; socket timeouts 30 s). `0`: none. |
+| `BLOBGATE_S3_PORT` | `0` (off) | The port of the S3 door ([s3.md](s3.md)): the tools of S3 read and write the objects of a tenant, signed with Signature Version 4 (access key: the tenant; secret key: `blobgate s3-key`). Serves TLS when the certificate is set. A restart is needed to change it. |
 | `BLOBGATE_METRICS_PORT` | `0` (off) | A port that serves `/metrics` with no token, for a scraper inside the cluster. **Dangerous** when it can be reached from outside. |
 | `BLOBGATE_THREADS` | `8` | Reads and sealed writes of a block at once (each holds a block, up to 8 MiB, in memory). |
 | `BLOBGATE_FULL_HINT` | a general sentence | What a refusal for want of room tells the person to do, after the figures. A product that uses the module puts its own words here (the name of its retention settings). |
@@ -60,6 +61,7 @@ replaced by changing the file and restarting; nothing is rebuilt.
 |---|---|
 | `blobgate validate [-json] [-secret option=value]... '<connection string>'` | Asks one node for what the module needs of it and says what it cannot do. Needs no database. Exit 1: the node cannot be used. |
 | `blobgate token <tenant> <secret> <METHOD> <target>` | Prints the token of a call of the core, for curl. |
+| `blobgate s3-key <tenant> <secret>` | Prints the access key and the secret key that a tool of S3 uses with the S3 door ([s3.md](s3.md)). |
 | `blobgate backup` | Takes a backup of rqlite now (docs/backup.md). |
 | `blobgate backups [-json]` | Lists the backups on the nodes, newest first. |
 | `blobgate verify [-id ID \| -all]` | Reads a backup (or every one) whole and checks it; changes nothing. |

@@ -14,7 +14,7 @@ func (s *Server) ShimHandler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("/s/", s.shim)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found", "no such route") })
-	return s.logged(mux, true)
+	return s.logged(mux, "shim")
 }
 
 func (s *Server) shim(w http.ResponseWriter, r *http.Request) {

@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -81,7 +79,9 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, m *store.Mirror, t
 	}{Objects: []listed{}, Prefixes: []string{}}
 	count := 0
 	for {
-		sql := "SELECT key, size, written_at, content_type, blocks, deleted_at FROM storage_objects WHERE store = ? AND key >= ? AND " + deletedCond
+		// the blocks of an object that points to a set (deduplication) are the set's: the version named in a listing is the one that a read names
+		sql := "SELECT key, size, written_at, content_type, CASE WHEN cid != '' THEN COALESCE((SELECT s.blocks FROM storage_sets s WHERE s.store = storage_objects.store AND s.cid = storage_objects.cid), blocks) ELSE blocks END, deleted_at, CASE WHEN md5 != '' THEN md5 ELSE COALESCE((SELECT s.md5 FROM storage_sets s WHERE s.store = storage_objects.store AND s.cid = storage_objects.cid), '') END " +
+			"FROM storage_objects WHERE store = ? AND key >= ? AND " + deletedCond
 		args := []any{m.Name, lo}
 		if hi != "" {
 			sql += " AND key < ?"
@@ -121,8 +121,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, m *store.Mirror, t
 			it := listed{Key: rel, Size: rq.Int(row[1]), Modified: rq.Int(row[2]), ContentType: rq.Str(row[3]), DeletedAt: rq.Int(row[5])}
 			var blocks []string
 			_ = json.Unmarshal([]byte(rq.Str(row[4])), &blocks)
-			h := sha256.Sum256([]byte(strings.Join(blocks, "\n") + "|" + strconv.FormatInt(it.Size, 10)))
-			it.ETag = `"` + hex.EncodeToString(h[:16]) + `"`
+			it.ETag = etagOf(rq.Str(row[6]), blocks, it.Size)
 			if trash && m.SoftDelete > 0 {
 				it.PurgeAt = it.DeletedAt + int64(m.SoftDelete.Seconds())
 			}

@@ -72,10 +72,12 @@ func main() {
 			return
 		case "token":
 			os.Exit(tokenCommand(os.Args[2:]))
+		case "s3-key":
+			os.Exit(s3KeyCommand(os.Args[2:]))
 		case "backup", "backups", "verify", "restore":
 			os.Exit(backupCommand(os.Args[1], os.Args[2:]))
 		case "-h", "--help", "help":
-			fmt.Println(validateUsage + "\n\n" + backupUsage + "\n\n" + tokenUsage)
+			fmt.Println(validateUsage + "\n\n" + backupUsage + "\n\n" + tokenUsage + "\n\n" + s3KeyUsage)
 			return
 		}
 	}
@@ -167,6 +169,10 @@ func main() {
 	if shimPort > 0 {
 		// its own pool and socket timeouts (30 s), so that step code cannot take what the core's calls need
 		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", shimPort), Handler: srv.ShimHandler(), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second})
+	}
+	// the S3 door: off unless a port is given
+	if p := envInt("BLOBGATE_S3_PORT", 0); p > 0 {
+		servers = append(servers, &http.Server{Addr: fmt.Sprintf(":%d", p), Handler: srv.S3Handler(), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second})
 	}
 	// the metrics on a port of their own, with no token, for a scraper inside the cluster (off by default; /metrics on the main port wants the admin token)
 	if mp := envInt("BLOBGATE_METRICS_PORT", 0); mp > 0 {

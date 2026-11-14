@@ -17,12 +17,15 @@ What the project intends to do and not do in the next year. It is a plan of two 
 
 ## Considers (no date)
 
-- Deduplication below the object (the same block in different objects, blocks cut by content), and a check before the write so that a copy is not sent at all: the whole-object kind is built (0.5.0, docs/deduplication.md).
+- Deduplication below the object (the same block in different objects, blocks cut by content): the whole-object kind (0.5.0) and the check before the write (`?link`, 0.6.0) are built, and the owner has said that
+  below the object is not wanted.
+- In the S3 door: parts of any size (they are now at most 8 MiB and of one size, which `mc` and other tools that use 16 MiB parts cannot meet), CopyObject (by `?link` when the bytes are kept), ListMultipartUploads,
+  an ETag that is the MD5 of a multipart object too.
 - Packing small blocks into larger files for nodes that are slow with many small files (FTP).
 - A bundled node (Garage) in the chart.
 
 ## Does not intend to do
 
-- To be a general S3 server (the listing of a tenant's keys is built, 0.4.0; the S3 wire protocol is not).
+- To be a full S3 server: the S3 door (0.6.0) answers the calls that tools make for objects and uploads; versions, ACLs, policies, lifecycle, notifications and virtual-hosted addresses are not intended.
 - Repository formats (Maven, npm, OCI): a separate service on top of this one, if ever.
 - A web interface.

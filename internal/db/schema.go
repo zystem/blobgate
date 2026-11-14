@@ -56,6 +56,15 @@ var columns = [][3]string{
 	{"storage_parts", "stored_sha256", "TEXT NOT NULL DEFAULT ''"}, // of the block as stored (sealed); sha256 stays that of what the shim sent, which the core compares
 	{"storage_parts", "stored_size", "INTEGER NOT NULL DEFAULT 0"},
 	{"storage_parts", "enc", "INTEGER NOT NULL DEFAULT 0"},
+	{"storage_objects", "md5", "TEXT NOT NULL DEFAULT ''"}, // MD5 of the whole body, when the write saw it all (the ETag of S3 for an object written in one call); '' otherwise
+	{"storage_sets", "md5", "TEXT NOT NULL DEFAULT ''"},
+	{"storage_sets", "scope", "TEXT NOT NULL DEFAULT ''"},  // who may share the set: the tenant, or '' for the whole store
+	{"storage_sets", "digest", "TEXT NOT NULL DEFAULT ''"}, // SHA-256 of the whole object, when the write knew it ('': a set made by a multipart upload, or by 0.5.0); a link names a set by it
+}
+
+// indexes on columns that are added after the tables are made
+var lateIndexes = []string{
+	`CREATE INDEX IF NOT EXISTS storage_sets_digest ON storage_sets (store, scope, digest, size)`,
 }
 
 // Migrate makes the tables and adds the columns that are missing; it can be run any number of times.
@@ -76,6 +85,11 @@ func Migrate(ctx context.Context, c *rq.Client) error {
 			if _, err := c.Exec(ctx, false, rq.S(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", col[0], col[1], col[2]))); err != nil {
 				return err
 			}
+		}
+	}
+	for _, ix := range lateIndexes {
+		if _, err := c.Exec(ctx, false, rq.S(ix)); err != nil {
+			return err
 		}
 	}
 	return nil

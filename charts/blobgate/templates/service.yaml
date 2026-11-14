@@ -15,6 +15,9 @@ spec:
     {{- if .Values.config.shimPort }}
     - {name: shim, port: {{ .Values.config.shimPort }}, targetPort: shim}
     {{- end }}
+    {{- if .Values.config.s3Port }}
+    - {name: s3, port: {{ .Values.config.s3Port }}, targetPort: s3}
+    {{- end }}
     {{- if .Values.config.metricsPort }}
     - {name: metrics, port: {{ .Values.config.metricsPort }}, targetPort: metrics}
     {{- end }}

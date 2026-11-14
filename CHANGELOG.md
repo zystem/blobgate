@@ -3,6 +3,26 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
+## [0.6.0] - 2026-11-14
+
+### Added
+* **The S3 door** (`BLOBGATE_S3_PORT`, off by default): the AWS CLI, `s3cmd`, the SDKs and presigned addresses read, write, list, delete and upload in parts to a tenant's objects (Signature Version 4, signed and streamed payloads); the access key is the
+  tenant, the secret key is `blobgate s3-key <tenant> <secret>`, the bucket is a store. Parts are at most 8 MiB and all but the last of one size. Not answered: CopyObject, ListMultipartUploads, versions, ACLs, policies
+  (`501 NotImplemented`). See docs/s3.md and docs/s3-reference.md.
+* **Check before the write**: `POST /v1/stores/{store}/objects/{key}?link` with `{sha256, size}` makes the key the bytes that the tenant's store keeps already, sending nothing (a store with `dedup: "tenant"`); 404 `no_such_content`, 409 `dedup_not_tenant`.
+* **A Go client**, `github.com/zystem/blobgate/client` (`Put`, `Get`, `Stat`, `Delete`, `List`, `ListAll`, `Link`, `PutOrLink`). See docs/go-client.md.
+* `Content-MD5` of a write is checked (400 `md5_mismatch`; `BadDigest` in S3); `cmd/bench -dedup`.
+* Fuzz targets for the signature and the chunked body of the S3 door; a test that kills the whole program with SIGKILL during deduplicating writes.
+
+### Changed
+* **The `ETag` of an object written in one call is the MD5 of its bytes**, as in S3; that of an object written in parts, or by an earlier release, is `"<hex>-<blocks>"`. Every object that was written before this release has a new ETag once
+  (a cache that revalidates with `If-None-Match` fetches it once more). The same bytes now have the same ETag in a store that seals (before, each sealed write was a new version).
+* The schema gains the columns `md5` (`storage_objects`, `storage_sets`), `scope` and `digest` (`storage_sets`), added at start.
+* The read of an object asks the database once, not twice, for an object that points to a set.
+
+### Fixed
+* The listing named another version (`ETag`) than a read for an object that points to a set of blocks (0.5.0, `dedup` on), so that a client that lists and then reads with `If-Match` (the AWS CLI's `sync`) refused the object.
+
 ## [0.5.0] - 2026-11-14
 
 ### Added

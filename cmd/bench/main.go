@@ -27,6 +27,7 @@ var (
 	admin  = flag.String("admin", "", "the admin token (to register the store)")
 	nodes  = flag.String("nodes", "", "directories of local nodes, comma separated (registers the store `bench` over them)")
 	keyArg = flag.String("seal", "", "a key text: the store seals its blocks")
+	dedup  = flag.String("dedup", "", `the store's setting dedup ("tenant" or "store"); the loads write the same bytes under many keys, so with it they measure the cost of a copy`)
 	pid    = flag.Int("pid", 0, "the pid of the module, for its memory")
 	big    = flag.Int("gib", 1, "size of the multipart object, GiB")
 	small  = flag.Int("small", 4000, "number of 64 KiB objects")
@@ -119,7 +120,7 @@ func main() {
 		for _, d := range strings.Split(*nodes, ",") {
 			ns = append(ns, map[string]any{"remote": ":local:" + d})
 		}
-		body := map[string]any{"kind": "mirror", "nodes": ns, "default": true}
+		body := map[string]any{"kind": "mirror", "nodes": ns, "default": true, "dedup": *dedup}
 		if *keyArg != "" {
 			body["encryption"] = map[string]any{"key_id": 1, "keys": map[string]string{"1": *keyArg}}
 		}
@@ -132,7 +133,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	fmt.Printf("sealed=%v   process peak at the start %s\n", *keyArg != "", hwm())
+	fmt.Printf("sealed=%v dedup=%q   process peak at the start %s\n", *keyArg != "", *dedup, hwm())
 	obj := "/v1/stores/bench/objects/"
 
 	b8 := bytes.Repeat([]byte("0123456789abcdef"), 8<<20/16)

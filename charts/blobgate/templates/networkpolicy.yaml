@@ -15,6 +15,9 @@ spec:
         {{- if .Values.config.shimPort }}
         - {port: {{ .Values.config.shimPort }}, protocol: TCP}
         {{- end }}
+        {{- if .Values.config.s3Port }}
+        - {port: {{ .Values.config.s3Port }}, protocol: TCP}
+        {{- end }}
         {{- if .Values.config.metricsPort }}
         - {port: {{ .Values.config.metricsPort }}, protocol: TCP}
         {{- end }}

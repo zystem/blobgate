@@ -170,6 +170,22 @@ func (p *proc) register(t *testing.T, nodes ...string) {
 	resp.Body.Close()
 }
 
+// registerDedup is register with the setting dedup.
+func (p *proc) registerDedup(t *testing.T, mode string, nodes ...string) {
+	var ns []any
+	for _, n := range nodes {
+		ns = append(ns, map[string]any{"remote": ":local:" + n})
+	}
+	b, _ := json.Marshal(map[string]any{"kind": "mirror", "default": true, "min_acks": 1, "dedup": mode, "nodes": ns})
+	req, _ := http.NewRequest("PUT", p.url("/v1/admin/stores/main"), bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer "+adminT)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("register: %v %v", err, resp)
+	}
+	resp.Body.Close()
+}
+
 func files(dir string) []string {
 	var out []string
 	_ = filepath.Walk(dir, func(p string, i os.FileInfo, err error) error {
@@ -399,4 +415,86 @@ func TestOldNamesOfTheSettings(t *testing.T) {
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
 		t.Fatalf("admin with the old names: %v %v", err, resp)
 	}
+}
+
+// The process is killed with SIGKILL while many writers write and delete objects of the same bytes (deduplication); after each restart the count of references is the number of rows, nothing points to a
+// set that is gone, every object that is there reads as it was written, and when the objects are deleted the worker leaves nothing on the nodes and nothing in the tables.
+func TestKillNineDuringDedupWrites(t *testing.T) {
+	rqURL := startRqlite(t)
+	dir := t.TempDir()
+	n1, n2 := filepath.Join(dir, "n1"), filepath.Join(dir, "n2")
+	env := []string{"BLOBGATE_UPLOAD_TTL_SECONDS=2", "BLOBGATE_REPAIR_SECONDS=1", "BLOBGATE_REPAIR_RETRY_SECONDS=1", "BLOBGATE_LEASE_SECONDS=4"}
+	bodies := [][]byte{bytes.Repeat([]byte("layer one "), 30000), bytes.Repeat([]byte("layer two "), 31000)}
+	db := rq.New(rqURL)
+	count := func(q string) int64 {
+		rows, err := db.Query(context.Background(), rq.S(q))
+		if err != nil || len(rows) == 0 {
+			return -1
+		}
+		return rq.Int(rows[0][0])
+	}
+	p := startModule(t, rqURL, env...)
+	p.register(t, n1, n2)
+	p.registerDedup(t, "tenant", n1, n2)
+	for round := 0; round < 4; round++ {
+		stop := make(chan struct{})
+		done := make(chan struct{}, 12)
+		for w := 0; w < 12; w++ {
+			go func(w int) {
+				defer func() { done <- struct{}{} }()
+				for n := 0; ; n++ {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					key := fmt.Sprintf("acme/r/%d-%d", w, n%5)
+					body := bodies[(w+n)%2]
+					if n%3 == 2 {
+						p.call("DELETE", "/v1/stores/main/objects/"+key, "", nil, nil)
+					} else {
+						p.call("PUT", "/v1/stores/main/objects/"+key, "", map[string]string{"X-Content-SHA256": sha(body)}, body)
+					}
+				}
+			}(w)
+		}
+		time.Sleep(time.Duration(400+round*150) * time.Millisecond)
+		p.kill9(t)
+		close(stop)
+		for w := 0; w < 12; w++ {
+			<-done
+		}
+		p = startModule(t, rqURL, env...)
+		waitFor(t, "the references are the rows, and the queues are empty", 60*time.Second, func() bool {
+			bad := count("SELECT count(*) FROM storage_sets s WHERE s.refs != (SELECT count(*) FROM storage_objects o WHERE o.store = s.store AND o.cid = s.cid)")
+			lost := count("SELECT count(*) FROM storage_objects WHERE cid != '' AND cid NOT IN (SELECT cid FROM storage_sets)")
+			ok := bad == 0 && lost == 0 && count("SELECT count(*) FROM storage_uploads") == 0 && count("SELECT count(*) FROM storage_repair") == 0
+			if !ok {
+				t.Logf("round %d: bad refs %d, lost sets %d, uploads %d, repair %d", round, bad, lost, count("SELECT count(*) FROM storage_uploads"), count("SELECT count(*) FROM storage_repair"))
+			}
+			return ok
+		})
+		// a set that nothing points to is removed with its blocks; the blocks on the nodes are those of the sets that are left (one block each, on both nodes)
+		waitFor(t, "the blocks on the nodes are those of the sets", 60*time.Second, func() bool {
+			return count("SELECT count(*) FROM storage_sets WHERE refs <= 0") == 0 && int64(len(files(n1))) == count("SELECT count(*) FROM storage_sets") && len(files(n2)) == len(files(n1))
+		})
+		rows, _ := db.Query(context.Background(), rq.S("SELECT key FROM storage_objects WHERE deleted_at = 0"))
+		for _, r := range rows {
+			key := strings.TrimPrefix(rq.Str(r[0]), "001/")
+			code, d := p.call("GET", "/v1/stores/main/objects/"+key, "", map[string]string{"Range": "bytes=0-9"}, nil)
+			if code != 206 || (!bytes.Equal(d, bodies[0][:10]) && !bytes.Equal(d, bodies[1][:10])) {
+				t.Fatalf("round %d: %s reads as %d %q", round, key, code, d)
+			}
+		}
+	}
+	// everything deleted: nothing is left on the nodes or in the tables
+	rows, _ := db.Query(context.Background(), rq.S("SELECT key FROM storage_objects"))
+	for _, r := range rows {
+		if code, d := p.call("DELETE", "/v1/stores/main/objects/"+strings.TrimPrefix(rq.Str(r[0]), "001/"), "", nil, nil); code != 200 {
+			t.Fatalf("delete: %d %s", code, d)
+		}
+	}
+	waitFor(t, "an empty store", 60*time.Second, func() bool {
+		return len(files(n1)) == 0 && len(files(n2)) == 0 && count("SELECT count(*) FROM storage_sets") == 0 && count("SELECT count(*) FROM storage_repair") == 0
+	})
 }

@@ -242,7 +242,7 @@ paths:
       responses:
         "200":
           description: "an object: {size}; a part: {etag} (the etag names the part's digest and length)"
-        "400": {description: "invalid_sha256, sha256_required (a part), sha256_mismatch (nothing is left behind), invalid_key, invalid_part, empty_body (a part), invalid_metadata", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "400": {description: "invalid_sha256, sha256_required (a part), sha256_mismatch and md5_mismatch (`Content-MD5` is checked too; nothing is left behind), invalid_key, invalid_part, empty_body (a part), invalid_metadata", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {description: "no_such_store, no_such_upload"}
         "409": {description: not_configured}
@@ -262,7 +262,7 @@ paths:
     get:
       summary: |
         read the whole object (200), or one range of it (206; `Range: bytes=a-b`, `bytes=a-`, `bytes=-n`; one range only). The bytes are streamed, a block at a time, each checked against its digest. The answer has
-        `ETag` (a version of the object), `Last-Modified`, `Content-Type`, `Accept-Ranges`, `Content-Range` for a range and the `X-Blobgate-Meta-<name>` headers; `If-None-Match` gives 304 and `If-Match` 412.
+        `ETag` (a version of the object: the MD5 of its bytes, in quotes, when it was written in one call, as S3 has it; otherwise a name with a dash, `hex-N`, as a multipart object of S3 has), `Last-Modified`, `Content-Type`, `Accept-Ranges`, `Content-Range` for a range and the `X-Blobgate-Meta-<name>` headers; `If-None-Match` gives 304 and `If-Match` 412.
         `?stat` gives {size, etag, content_type, modified, meta}, and `?upload=<id>&parts` the digests the module made of the parts it received.
       security: [{coreToken: []}]
       parameters:
@@ -284,15 +284,16 @@ paths:
         "416": {description: range_not_satisfiable, with `Content-Range: bytes */<size>`}
         "503": {$ref: "#/components/responses/Unavailable"}
     post:
-      summary: "`?uploads[&size=<bytes>]` begins a multipart upload; `?upload=<id>` completes it; `?restore` brings an object back from the trash"
+      summary: "`?uploads[&size=<bytes>]` begins a multipart upload; `?upload=<id>` completes it; `?restore` brings an object back from the trash; `?link` makes the key bytes that the store keeps already, without sending them"
       security: [{coreToken: []}]
       parameters:
         - {name: uploads, in: query, allowEmptyValue: true, schema: {type: string}}
         - {name: size, in: query, schema: {type: integer, format: int64}, description: the size of the whole object when known, counted by the room check}
         - {name: restore, in: query, allowEmptyValue: true, schema: {type: string}}
+        - {name: link, in: query, allowEmptyValue: true, schema: {type: string}, description: "the body is {\"sha256\": \"<hex>\", \"size\": <bytes>}: the key becomes the bytes of this tenant that have this digest and size, and nothing is sent (a check before the write). It needs a store whose `dedup` is `tenant`: with another setting the answer is 409 `dedup_not_tenant`. When the store has no such bytes (or the set went just now) the answer is 404 `no_such_content`, and the old object is untouched: send the bytes with PUT. Only sets made by a PUT in one call have a digest. The metadata headers and If-Match / If-None-Match are as in PUT. Answers {size, linked: true}."}
         - {$ref: "#/components/parameters/upload"}
       requestBody:
-        description: "complete only: {\"parts\": [[1, \"etag\"], ...]}, at most 10000 parts, at most 1 MiB"
+        description: "complete only: {\"parts\": [[1, \"etag\"], ...]}, at most 10000 parts, at most 1 MiB; link: {sha256, size}"
         content:
           application/json: {schema: {type: object}}
       responses:
@@ -300,7 +301,8 @@ paths:
         "400": {$ref: "#/components/responses/Problem"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "503": {$ref: "#/components/responses/Unavailable"}
-        "404": {description: "restore: the object is not in the trash"}
+        "404": {description: "restore: the object is not in the trash; link: no_such_content"}
+        "409": {description: "link: dedup_not_tenant"}
         "507": {$ref: "#/components/responses/StoreFull"}
     delete:
       summary: |
