@@ -3,6 +3,16 @@
 All notable changes. The format is that of [Keep a Changelog](https://keepachangelog.com), the versions are [Semantic Versions](https://semver.org). The API of the module is the one of
 `internal/api/openapi.yaml`; a change of it that breaks a caller is a change of the major version (of the minor one while the major is 0).
 
+## [0.5.0] - 2026-11-14
+
+### Added
+* Deduplication: the store setting `dedup` (`""`, `"tenant"`, `"store"`); objects with the same bytes keep one set of blocks, counted in `storage_sets` in the transaction of the object that takes or gives the reference;
+  sets with no reference are removed by the worker. Sealed stores seal such blocks convergently. `GET /v1/admin/stores/{name}:usage` shows `dedup`; metrics `blobgate_dedup_objects_total`,
+  `blobgate_dedup_saved_bytes_total`, `blobgate_sets_removed_total`. See docs/deduplication.md.
+
+### Changed
+* The schema gains `storage_sets` and the column `cid` of `storage_objects`, added at start. Nothing changes for a store that does not set `dedup`.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added

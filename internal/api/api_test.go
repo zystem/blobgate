@@ -51,7 +51,7 @@ func newRig(t *testing.T, mut func(*Config)) *rig {
 	}
 	c := rq.New(url)
 	ctx := context.Background()
-	for _, tb := range []string{"storage_stores", "storage_objects", "storage_repair", "storage_parts", "storage_uploads", "storage_lease", "storage_quotas"} {
+	for _, tb := range []string{"storage_stores", "storage_objects", "storage_repair", "storage_parts", "storage_uploads", "storage_lease", "storage_quotas", "storage_sets"} {
 		if _, err := c.Exec(ctx, false, rq.S("DROP TABLE IF EXISTS "+tb)); err != nil {
 			t.Fatal(err)
 		}

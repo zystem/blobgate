@@ -35,12 +35,14 @@ type Config struct {
 	MinAcks  int        `json:"min_acks,omitempty"` // 0: every node must confirm a write
 	SpaceURL string     `json:"space_url,omitempty"`
 	// SoftDeleteSeconds: a deleted object is kept this long in the trash (hidden, restorable) before its blocks are removed; 0: removed at once
-	SoftDeleteSeconds int        `json:"soft_delete_seconds,omitempty"`
-	Encrypt           *EncConfig `json:"encrypt,omitempty"`  // seal the blocks written from now on (what is already written stays as it is and is still read)
-	Endpoint          string     `json:"endpoint,omitempty"` // s3
-	Region            string     `json:"region,omitempty"`
-	Bucket            string     `json:"bucket,omitempty"`
-	KeyID             string     `json:"access_key_id,omitempty"`
+	SoftDeleteSeconds int `json:"soft_delete_seconds,omitempty"`
+	// Dedup: objects with the same bytes keep one set of blocks: "" (the default) off, "tenant" the same tenant only, "store" every tenant of the store
+	Dedup    string     `json:"dedup,omitempty"`
+	Encrypt  *EncConfig `json:"encrypt,omitempty"`  // seal the blocks written from now on (what is already written stays as it is and is still read)
+	Endpoint string     `json:"endpoint,omitempty"` // s3
+	Region   string     `json:"region,omitempty"`
+	Bucket   string     `json:"bucket,omitempty"`
+	KeyID    string     `json:"access_key_id,omitempty"`
 }
 
 // Secrets are the options that must not be written in the clear: per node for a mirror, the secret key for s3.
@@ -115,6 +117,9 @@ func (c Config) Check(s Secrets) string {
 		if c.SoftDeleteSeconds < 0 || c.SoftDeleteSeconds > 366*24*3600 {
 			return "soft_delete_seconds is 0 (removed at once) or up to a year"
 		}
+		if c.Dedup != "" && c.Dedup != "tenant" && c.Dedup != "store" {
+			return "dedup is \"\" (off, the default), \"tenant\" or \"store\""
+		}
 		if !(strings.HasPrefix(c.Endpoint, "http://") || strings.HasPrefix(c.Endpoint, "https://")) || strings.Count(strings.TrimPrefix(strings.TrimPrefix(c.Endpoint, "http://"), "https://"), "/") > 0 {
 			return "endpoint is scheme://host[:port], http or https, with no path"
 		}
@@ -148,6 +153,9 @@ func (c Config) Check(s Secrets) string {
 		}
 		if c.SoftDeleteSeconds < 0 || c.SoftDeleteSeconds > 366*24*3600 {
 			return "soft_delete_seconds is 0 (removed at once) or up to a year"
+		}
+		if c.Dedup != "" && c.Dedup != "tenant" && c.Dedup != "store" {
+			return "dedup is \"\" (off, the default), \"tenant\" or \"store\""
 		}
 		if c.MinAcks < 0 || c.MinAcks > len(c.Nodes) {
 			return fmt.Sprintf("min_acks is 0 (every node, the default) or 1..%d", len(c.Nodes))

@@ -7,6 +7,7 @@ Every page is of one kind (Diátaxis). The README at the root is the way in.
 | [../README.md](../README.md) | tutorial | the try-it, with the output of every command |
 | [backup.md](backup.md) | how-to | back up rqlite, restore into an empty one, choose an older backup |
 | [encryption.md](encryption.md) | how-to and reference | seal the blocks of a store; the keys; what it costs |
+| [deduplication.md](deduplication.md) | how-to and explanation | keep the same bytes once; what is shared, how the counts stay true, what it does to encryption |
 | [configuration.md](configuration.md) | reference | every environment variable and command, with default and whether a restart is needed |
 | [metrics.md](metrics.md) | reference | every metric |
 | [../internal/api/openapi.yaml](../internal/api/openapi.yaml) | reference | the HTTP API (served at `/v1/openapi.yaml`; a test keeps it equal to the routes) |

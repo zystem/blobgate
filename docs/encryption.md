@@ -34,6 +34,11 @@ It answers `{"name":"main","checked":true}` as for any store (not run as a comma
 * **Algorithm.** AES-256-GCM; for every generation of an object a key made of the master key, the object's key and the generation (HMAC-SHA256), a random 96-bit nonce, so that no key seals more than one
   generation. The block is `1 byte version | 4 bytes key id | 12 bytes nonce | ciphertext | 16 bytes tag`.
 
+## With deduplication
+
+A store with `dedup` seals convergently (the key and the nonce come from the key of the store, the scope and the digest of the plain block), so that the same bytes seal to the same bytes; what that tells an
+attacker is in [deduplication.md](deduplication.md). Without `dedup`, nothing here changes.
+
 ## What was run (2026-11-12) and what was not
 
 Run (`internal/store/encrypt_test.go`, `internal/api/encrypt_test.go`, local nodes): the nodes hold no plain bytes and a sealed block is 33 bytes longer; ranges across blocks; a multipart upload (the digest

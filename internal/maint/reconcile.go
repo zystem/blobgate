@@ -134,6 +134,13 @@ func (w *Worker) Reconcile(ctx context.Context, name string, apply bool, minAge 
 		}
 		cursor = rq.Str(rows[len(rows)-1][0])
 	}
+	sets, err := w.DB.Query(ctx, rq.S("SELECT owner, generation FROM storage_sets WHERE store = ?", m.Name))
+	if err != nil {
+		return rep, err
+	}
+	for _, r := range sets {
+		known[layout.BlockDir(rq.Str(r[0]), rq.Str(r[1]))] = true
+	}
 	ups, err := w.DB.Query(ctx, rq.S("SELECT key, upload FROM storage_uploads WHERE store = ?", m.Name))
 	if err != nil {
 		return rep, err

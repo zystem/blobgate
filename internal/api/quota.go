@@ -149,5 +149,11 @@ func (s *Server) adminUsage(w http.ResponseWriter, r *http.Request, name string)
 		byTenant[t]["max_bytes"], byTenant[t]["max_objects"] = q.maxBytes, q.maxObjects
 		items = append(items, byTenant[t])
 	}
-	writeJSON(w, 200, map[string]any{"store": name, "tenants": items})
+	out := map[string]any{"store": name, "tenants": items}
+	// deduplication: what the objects hold, and what the store keeps for them
+	if d, err := s.DB.QueryWeak(ctx, rq.S("SELECT (SELECT count(*) FROM storage_sets WHERE store = ?1), (SELECT coalesce(sum(size), 0) FROM storage_sets WHERE store = ?1), "+
+		"(SELECT count(*) FROM storage_objects WHERE store = ?1 AND cid != ''), (SELECT coalesce(sum(size), 0) FROM storage_objects WHERE store = ?1 AND cid != '')", name)); err == nil && len(d) == 1 && rq.Int(d[0][0]) > 0 {
+		out["dedup"] = map[string]any{"sets": rq.Int(d[0][0]), "stored_bytes": rq.Int(d[0][1]), "objects": rq.Int(d[0][2]), "logical_bytes": rq.Int(d[0][3])}
+	}
+	writeJSON(w, 200, out)
 }

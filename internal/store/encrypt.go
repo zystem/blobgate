@@ -104,3 +104,59 @@ func (c *Cipher) Open(full, gen string, n int, data []byte) ([]byte, error) {
 	}
 	return plain, nil
 }
+
+// SealConv seals a block so that the same bytes seal to the same sealed bytes: the key and the nonce come from the master key, the scope (the tenant, or "" for a whole store) and the digest of the
+// plain block (HMAC-SHA256), and nothing about the place is in it. Two objects with the same contents then have the same sealed blocks, which is what deduplication needs. Whoever has no master key
+// cannot tell whether a block is one he knows; whoever can write to the store can tell, by the time a write takes or by the size of the store, whether a block is already there (docs/encryption.md).
+func (c *Cipher) SealConv(scope, plainSHA string, plain []byte) ([]byte, error) {
+	master := c.keys[c.Current]
+	if master == nil {
+		return nil, &ErrNoKey{c.Current}
+	}
+	a, nonce, err := c.conv(master, scope, plainSHA)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 5, EncOverhead+len(plain))
+	out[0] = 1
+	binary.BigEndian.PutUint32(out[1:5], c.Current)
+	out = append(out, nonce...)
+	return a.Seal(out, nonce, plain, []byte("blobgate/conv")), nil
+}
+
+// OpenConv opens what SealConv sealed.
+func (c *Cipher) OpenConv(scope, plainSHA string, data []byte) ([]byte, error) {
+	if len(data) < EncOverhead || data[0] != 1 {
+		return nil, ErrDecrypt
+	}
+	id := uint32(data[1])<<24 | uint32(data[2])<<16 | uint32(data[3])<<8 | uint32(data[4])
+	master := c.keys[id]
+	if master == nil {
+		return nil, &ErrNoKey{id}
+	}
+	a, _, err := c.conv(master, scope, plainSHA)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := a.Open(nil, data[5:5+a.NonceSize()], data[5+a.NonceSize():], []byte("blobgate/conv"))
+	if err != nil {
+		return nil, ErrDecrypt
+	}
+	return plain, nil
+}
+
+func (c *Cipher) conv(master []byte, scope, plainSHA string) (cipher.AEAD, []byte, error) {
+	k := hmac.New(sha256.New, master)
+	k.Write([]byte("conv-key|" + scope + "|" + plainSHA))
+	b, err := aes.NewCipher(k.Sum(nil))
+	if err != nil {
+		return nil, nil, err
+	}
+	a, err := cipher.NewGCM(b)
+	if err != nil {
+		return nil, nil, err
+	}
+	n := hmac.New(sha256.New, master)
+	n.Write([]byte("conv-nonce|" + scope + "|" + plainSHA))
+	return a, n.Sum(nil)[:a.NonceSize()], nil
+}

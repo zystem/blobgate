@@ -214,7 +214,13 @@ func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string
 			return written{}, &herr{400, "sha256_mismatch", "the body is not the one X-Content-SHA256 names"}
 		}
 		given = plain
-		sealed, err := m.Enc.Seal(full, gen, n, buf)
+		var sealed []byte
+		var err error
+		if m.Dedup != "" {
+			sealed, err = m.Enc.SealConv(scopeOf(m, full), plain, buf)
+		} else {
+			sealed, err = m.Enc.Seal(full, gen, n, buf)
+		}
 		if err != nil {
 			return written{}, &herr{500, "encryption_failed", err.Error()}
 		}
@@ -266,6 +272,19 @@ type objectRow struct {
 	written    int64 // when it was fixed, unix seconds
 	deleted    int64 // when it was put in the trash, unix seconds; 0: it is there
 	meta       objMeta
+	// deduplication: cid names the set of blocks the object points to ("": the object has its own, in `generation` under its own key); owner is the key of the directory of that set, plain the digests of the
+	// blocks before sealing (a sealed block of a set is opened with the key made from them)
+	cid   string
+	owner string
+	plain []string
+}
+
+// dir is the key whose directory holds the blocks of the object.
+func (o *objectRow) dir(full string) string {
+	if o.owner != "" {
+		return o.owner
+	}
+	return full
 }
 
 // objMeta is what a writer says about an object besides its bytes: the type of its contents and some pairs of text. It is kept and given back; the module does not look at it.
@@ -354,7 +373,7 @@ func (s *Server) getRow(ctx context.Context, st, full string) (*objectRow, error
 
 // getRowAny is the row whatever its state (the writes and the cleaning see the trash too).
 func (s *Server) getRowAny(ctx context.Context, st, full string) (*objectRow, error) {
-	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc, written_at, content_type, meta, deleted_at FROM storage_objects WHERE store = ? AND key = ?", st, full))
+	rows, err := s.DB.QueryWeak(ctx, rq.S("SELECT size, generation, block_size, blocks, enc, written_at, content_type, meta, deleted_at, cid FROM storage_objects WHERE store = ? AND key = ?", st, full))
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
@@ -363,6 +382,19 @@ func (s *Server) getRowAny(ctx context.Context, st, full string) (*objectRow, er
 	_ = json.Unmarshal([]byte(rq.Str(rows[0][7])), &o.meta.Pairs)
 	if err := json.Unmarshal([]byte(rq.Str(rows[0][3])), &o.blocks); err != nil {
 		return nil, fmt.Errorf("the row of %s is damaged: %w", full, err)
+	}
+	if o.cid = rq.Str(rows[0][9]); o.cid != "" {
+		set, err := s.DB.QueryWeak(ctx, rq.S("SELECT owner, generation, block_size, blocks, plain, enc FROM storage_sets WHERE store = ? AND cid = ?", st, o.cid))
+		if err != nil {
+			return nil, err
+		}
+		if len(set) == 0 {
+			return nil, fmt.Errorf("the set %s of %s is gone", o.cid, full)
+		}
+		o.owner, o.generation, o.blockSize, o.enc = rq.Str(set[0][0]), rq.Str(set[0][1]), rq.Int(set[0][2]), keyID(rq.Int(set[0][5]))
+		if json.Unmarshal([]byte(rq.Str(set[0][3])), &o.blocks) != nil || json.Unmarshal([]byte(rq.Str(set[0][4])), &o.plain) != nil {
+			return nil, fmt.Errorf("the set %s of %s is damaged", o.cid, full)
+		}
 	}
 	return o, nil
 }
@@ -380,9 +412,28 @@ func (s *Server) purgeTasks(m *store.Mirror, full, except string) []rq.Stmt {
 	return out
 }
 
+// cidOf names a set of blocks by what is in it: the scope (who may share it), the key the blocks are sealed with, the size of a block, the size, and the digest of every block before sealing.
+func cidOf(scope string, enc uint32, blockSize, size int64, plain []string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "blobgate/set/v1\n%s\n%d\n%d\n%d\n%s", scope, enc, blockSize, size, strings.Join(plain, "\n"))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// releaseSet is the statement that gives back the reference the object has now on its set of blocks (nothing when it has none). It reads the row of the object in the transaction that changes or removes it,
+// so that the count and the rows move together whoever else writes the key at the same moment. `trash` limits it to an object that is in the trash (the worker's removal).
+func (s *Server) releaseSet(st, full string, trash bool) rq.Stmt {
+	cond := ""
+	if trash {
+		cond = " AND deleted_at > 0"
+	}
+	return rq.S("UPDATE storage_sets SET refs = refs - 1, zero_since = CASE WHEN refs - 1 <= 0 THEN ? ELSE 0 END WHERE store = ? AND cid = (SELECT cid FROM storage_objects WHERE store = ? AND key = ? AND cid != ''"+cond+")",
+		s.now(), st, st, full)
+}
+
 // commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
-// at once; what a node could not do stays in the queue.
-func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks []string, enc uint32, om objMeta) error {
+// at once; what a node could not do stays in the queue. In a store with deduplication the blocks are the object's own until this transaction: it either makes them a set (the first object with these bytes)
+// or takes a reference on the set that is there and writes down the removal of the blocks just written. A writer never relies on a set that may be removed: the set is found or made in the same transaction.
+func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks, plain []string, enc uint32, om objMeta) error {
 	old, err := s.getRowAny(ctx, m.Name, full)
 	if err != nil {
 		return err
@@ -392,21 +443,43 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 	if om.Pairs == nil {
 		pj = []byte("{}")
 	}
+	dedup := m.Dedup != "" && size > 0 && len(blocks) > 0 && len(plain) == len(blocks)
+	cid := ""
 	s.at("commit:before")
-	stmts := s.purgeTasks(m, full, gen)
+	stmts := []rq.Stmt{s.releaseSet(m.Name, full, false)}
+	stmts = append(stmts, s.purgeTasks(m, full, gen)...)
+	ownGen, ownBlocks, ownSize, ownEnc := gen, string(bj), blockSize, enc
+	if dedup {
+		cid = cidOf(scopeOf(m, full), enc, blockSize, size, plain)
+		plj, _ := json.Marshal(plain)
+		stmts = append(stmts, rq.S("INSERT INTO storage_sets (store, cid, owner, generation, size, block_size, blocks, plain, enc, refs, zero_since, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?) "+
+			"ON CONFLICT(store, cid) DO UPDATE SET refs = refs + 1, zero_since = 0", m.Name, cid, full, gen, size, blockSize, string(bj), string(plj), enc, s.now()))
+		for _, n := range m.Nodes {
+			stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
+				"SELECT store, ?, ?, 'purge', ?, 0, 0, '' FROM storage_sets WHERE store = ? AND cid = ? AND NOT (owner = ? AND generation = ?) "+
+				"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", layout.DirKey(full, gen), n.ID, s.now(), m.Name, cid, full, gen))
+		}
+		ownGen, ownBlocks, ownSize, ownEnc = "", "[]", 0, 0
+	}
 	stmts = append(stmts,
-		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0) "+
+		rq.S("INSERT INTO storage_objects (store, key, size, written_at, generation, block_size, blocks, enc, content_type, meta, deleted_at, cid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) "+
 			"ON CONFLICT(store, key) DO UPDATE SET size = excluded.size, written_at = excluded.written_at, generation = excluded.generation, block_size = excluded.block_size, blocks = excluded.blocks, enc = excluded.enc, "+
-			"content_type = excluded.content_type, meta = excluded.meta, deleted_at = 0",
-			m.Name, full, size, s.now(), gen, blockSize, string(bj), enc, om.ContentType, string(pj)),
+			"content_type = excluded.content_type, meta = excluded.meta, deleted_at = 0, cid = excluded.cid",
+			m.Name, full, size, s.now(), ownGen, ownSize, ownBlocks, ownEnc, om.ContentType, string(pj), cid),
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
 		return err
 	}
 	s.at("commit:after-tx")
-	if old != nil && old.generation != "" && old.generation != gen {
+	if old != nil && old.cid == "" && old.generation != "" && old.generation != gen {
 		s.purgeNow(ctx, m, full, old.generation)
+	}
+	if dedup {
+		if rows, err := s.DB.Query(ctx, rq.S("SELECT owner, generation FROM storage_sets WHERE store = ? AND cid = ?", m.Name, cid)); err == nil && len(rows) == 1 && (rq.Str(rows[0][0]) != full || rq.Str(rows[0][1]) != gen) {
+			s.purgeNow(ctx, m, full, gen) // the bytes were there already: the blocks just written are not needed
+			metrics.Deduplicated(m.Name, size)
+		}
 	}
 	return nil
 }
@@ -512,7 +585,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		e.write(w)
 	}
 	var total int64
-	var blocks []string
+	var blocks, plain []string
 	var enc uint32
 	switch {
 	case size == 0:
@@ -523,7 +596,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 			fail2(e)
 			return
 		}
-		total, blocks, enc = size, []string{w0.stored}, w0.enc
+		total, blocks, plain, enc = size, []string{w0.stored}, []string{w0.plain}, w0.enc
 	default:
 		buf := make([]byte, BlockSize)
 		whole := sha256.New()
@@ -543,7 +616,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 					fail2(e)
 					return
 				}
-				blocks, enc = append(blocks, w0.stored), w0.enc
+				blocks, plain, enc = append(blocks, w0.stored), append(plain, w0.plain), w0.enc
 			}
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
@@ -572,7 +645,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 	if size > 0 && size <= BlockSize {
 		blockSize = size
 	}
-	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, enc, om); err != nil {
+	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, plain, enc, om); err != nil {
 		s.purge(ctx, m, full, gen)
 		fail(w, err)
 		return
@@ -771,7 +844,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		byN[p.part] = p
 	}
 	sort.Slice(given, func(i, j int) bool { return given[i].n < given[j].n })
-	blocks := make([]string, len(given))
+	blocks, plain := make([]string, len(given)), make([]string, len(given))
 	var enc uint32
 	var total, blockSize int64
 	for i, g := range given {
@@ -801,7 +874,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 			problem(w, 400, "invalid_request", "the parts of the upload are not all sealed the same way (the settings of the store changed in the middle of it): upload it again")
 			return
 		}
-		blocks[i] = p.stored
+		blocks[i], plain[i] = p.stored, p.sha
 		total += p.size
 	}
 	if e := s.checkQuota(ctx, m, full, total); e != nil {
@@ -814,7 +887,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		om.ContentType = rq.Str(rows[0][0])
 		_ = json.Unmarshal([]byte(rq.Str(rows[0][1])), &om.Pairs)
 	}
-	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, enc, om); err != nil {
+	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, enc, om); err != nil {
 		fail(w, err)
 		return
 	}
@@ -853,7 +926,12 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.M
 	}
 	if m.SoftDelete > 0 && !has(r, "purge") {
 		if old.deleted == 0 {
-			if _, err := s.DB.Exec(ctx, false, rq.S("UPDATE storage_objects SET deleted_at = ? WHERE store = ? AND key = ? AND deleted_at = 0 AND generation = ?", s.now(), m.Name, full, old.generation)); err != nil {
+			// the version that was read: its set (deduplication) or its own generation
+			guard, arg := "generation = ? AND cid = ''", old.generation
+			if old.cid != "" {
+				guard, arg = "cid = ?", old.cid
+			}
+			if _, err := s.DB.Exec(ctx, false, rq.S("UPDATE storage_objects SET deleted_at = ? WHERE store = ? AND key = ? AND deleted_at = 0 AND "+guard, s.now(), m.Name, full, arg)); err != nil {
 				fail(w, err)
 				return
 			}
@@ -863,14 +941,17 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.M
 		return
 	}
 	// the removal of the blocks is written down in the transaction that removes the row, so that a process that dies between the two leaves nothing that nobody knows of
-	stmts := s.purgeTasks(m, full, "")
+	stmts := []rq.Stmt{s.releaseSet(m.Name, full, false)} // a set that nothing points to any more is removed by the worker
+	stmts = append(stmts, s.purgeTasks(m, full, "")...)
 	stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ?", m.Name, full))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
 		fail(w, err)
 		return
 	}
 	s.at("delete:after-tx")
-	s.purgeNow(ctx, m, full, old.generation)
+	if old.cid == "" {
+		s.purgeNow(ctx, m, full, old.generation)
+	}
 	writeJSON(w, 200, map[string]any{"deleted": true})
 }
 
@@ -1022,12 +1103,15 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 			return nil, r.Context().Err()
 		}
 		defer func() { <-s.reads }()
-		data, err := m.ReadBlock(r.Context(), layout.BlockPath(full, o.generation, i), o.blocks[i], o.storedLen(i))
+		data, err := m.ReadBlock(r.Context(), layout.BlockPath(o.dir(full), o.generation, i), o.blocks[i], o.storedLen(i))
 		if err != nil || o.enc == 0 {
 			return data, err
 		}
 		if m.Enc == nil {
 			return nil, &store.ErrNoKey{ID: o.enc}
+		}
+		if o.cid != "" {
+			return m.Enc.OpenConv(scopeOf(m, full), o.plain[i], data)
 		}
 		return m.Enc.Open(full, o.generation, i, data)
 	}
@@ -1066,4 +1150,12 @@ func keyID(n int64) uint32 {
 		return 0
 	}
 	return uint32(n)
+}
+
+// scopeOf is what two objects must share to share their blocks: the tenant, or the whole store.
+func scopeOf(m *store.Mirror, full string) string {
+	if m.Dedup == "store" {
+		return ""
+	}
+	return tenantOfKey(full)
 }
