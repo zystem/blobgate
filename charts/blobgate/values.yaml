@@ -29,7 +29,7 @@ config:
   shimPort: 18091        # the port for step shims; 0: none
   s3Port: 0              # the port of the S3 door (docs/s3.md); 0: none
   metricsPort: 0         # a port with /metrics and no token, for a scraper inside the cluster; 0: none
-  threads: 0             # reads and sealed writes at once (8)
+  threads: 0             # reads and sealed writes at once (4)
   reserveBytes: 0        # room kept free in a store (256 MiB)
   repairSeconds: 0       # 60
   repairRetrySeconds: 0  # 30
@@ -49,7 +49,7 @@ backup:
 
 resources:
   requests: {cpu: 50m, memory: 128Mi}
-  limits: {memory: 512Mi}   # a read or a sealed write holds a block of up to 8 MiB, `config.threads` (8) of them at most; 75 MB measured, 115 MB sealed (docs/benchmark.md)
+  limits: {memory: 512Mi}   # a read or a sealed write holds a block of up to 8 MiB, `config.threads` (4) of them at most; 75 MB measured, 115 MB sealed (docs/benchmark.md)
 
 podAnnotations: {}
 podLabels: {}

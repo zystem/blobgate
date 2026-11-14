@@ -23,7 +23,7 @@ accepted; `blobgate token` makes `v2`.
 | `BLOBGATE_SHIM_PORT` | `18091` | The port for step shims (plain HTTP, grants only; socket timeouts 30 s). `0`: none. |
 | `BLOBGATE_S3_PORT` | `0` (off) | The port of the S3 door ([s3.md](s3.md)): the tools of S3 read and write the objects of a tenant, signed with Signature Version 4 (access key: the tenant; secret key: `blobgate s3-key`). Serves TLS when the certificate is set. A restart is needed to change it. |
 | `BLOBGATE_METRICS_PORT` | `0` (off) | A port that serves `/metrics` with no token, for a scraper inside the cluster. **Dangerous** when it can be reached from outside. |
-| `BLOBGATE_THREADS` | `8` | Reads and sealed writes of a block at once (each holds a block, up to 8 MiB, in memory). |
+| `BLOBGATE_THREADS` | `4` | Reads and sealed writes of a block at once (each holds a block, up to 8 MiB, in memory). |
 | `BLOBGATE_FULL_HINT` | a general sentence | What a refusal for want of room tells the person to do, after the figures. A product that uses the module puts its own words here (the name of its retention settings). |
 | `BLOBGATE_MAX_OBJECT_BYTES` | `0` (no limit besides the room) | The most bytes one object may hold; a larger write is refused with 413 `too_large` (at once when its `Content-Length` says so, else when the body passes it). |
 | `BLOBGATE_RESERVE_BYTES` | `268435456` (256 MiB) | Room kept free in a store: a write that would leave less is refused with 507 `store_full`. `0` is the default, not "none". |

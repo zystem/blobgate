@@ -29,7 +29,7 @@ It answers `{"name":"main","checked":true}` as for any store (not run as a comma
   A sealed block is 33 bytes longer than what it holds.
 * **What an attacker with a node gets:** the sealed blocks and the sizes and the names of the paths (the key of an object, which is not sealed). Not the contents, and not a block moved to another place:
   the place of a block (its key, generation and number) is part of what the seal checks. What an attacker with the database gets: the keys are sealed with `BLOBGATE_SEAL_KEY`, so also not these.
-* **Memory.** A block is sealed whole (the tag is at its end), so a write into a sealed store holds one block (at most 8 MiB) in memory, and at most `BLOBGATE_THREADS` (8) at once; a plain store
+* **Memory.** A block is sealed whole (the tag is at its end), so a write into a sealed store holds one block (at most 8 MiB) in memory, and at most `BLOBGATE_THREADS` (4) at once; a plain store
   holds none. This is the cost to measure before a sealed store is made busy (not measured).
 * **Algorithm.** AES-256-GCM; for every generation of an object a key made of the master key, the object's key and the generation (HMAC-SHA256), a random 96-bit nonce, so that no key seals more than one
   generation. The block is `1 byte version | 4 bytes key id | 12 bytes nonce | ciphertext | 16 bytes tag`.
