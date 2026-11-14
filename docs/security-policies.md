@@ -28,3 +28,15 @@ What the project does about its dependencies, its code, its secrets and its rele
 
 * Made only by the release workflow, from a signed tag; the files, the image and the chart are signed keyless and carry build provenance and a bill of materials; the build is repeatable bit for bit
   ([verifying-releases.md](verifying-releases.md)).
+
+## VEX: findings that do not affect the program
+
+`govulncheck` runs on every change and fails the build for a vulnerability whose code the program **calls**. A vulnerability in a module that is required but whose vulnerable code is **not called** does not fail it; such findings are
+accounted for in an [OpenVEX](https://openvex.dev) document, [`vex/blobgate.openvex.json`](../vex/blobgate.openvex.json), with the status `not_affected` and the reason (`vulnerable_code_not_present`). It is made by
+
+```bash
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format openvex ./...
+```
+
+and is brought up to date when a release is made ([release.md](release.md), step 4): a finding that is gone (the module was updated) is taken out, a new one is added with the words that say why it does not affect the program. A finding that does
+affect it is not a VEX statement: it is fixed under the times of [SECURITY.md](../SECURITY.md). As of 2026-11-14 the document has one statement: GO-2026-5932 (`golang.org/x/crypto/openpgp`, which the program does not call).

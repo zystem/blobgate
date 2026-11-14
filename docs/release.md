@@ -15,7 +15,7 @@ How-to page. A release is a tag; the workflow `.github/workflows/release.yml` do
    * the chart `oci://ghcr.io/<owner>/charts/blobgate` version X.Y.Z (appVersion X.Y.Z, so `image.tag` can stay empty);
    * the GitHub release with `blobgate_X.Y.Z_linux_<arch>.tar.gz`, `checksums.txt`, the bill of materials (`blobgate.spdx.json`) and the chart, each with a `.sigstore.json` (keyless signature);
    * a build provenance attestation for the image, the chart and the files.
-4. Also in the commit before the tag: `docs/supported-versions.md` (the new release is the latest; the ones before it in its minor are replaced; the previous minor gets its end date, 30 days after a new minor).
+4. Also in the commit before the tag: the VEX document (`vex/blobgate.openvex.json`, made as [security-policies.md](security-policies.md#vex-findings-that-do-not-affect-the-program) says: run `govulncheck -format openvex`, keep the statements that are still true), and `docs/supported-versions.md` (the new release is the latest; the ones before it in its minor are replaced; the previous minor gets its end date, 30 days after a new minor).
 5. Check what was published, as a user would ([verifying-releases.md](verifying-releases.md)):
 
    ```bash
