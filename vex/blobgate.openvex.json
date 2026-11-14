@@ -1,0 +1,31 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/zystem/blobgate/blob/main/vex/blobgate.openvex.json",
+  "author": "blobgate maintainers",
+  "timestamp": "2026-11-14T13:20:32Z",
+  "version": 1,
+  "tooling": "https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck",
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://pkg.go.dev/vuln/GO-2026-5932",
+        "name": "GO-2026-5932",
+        "description": "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design, and has known security issues"
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/zystem/blobgate",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/golang.org%2Fx%2Fcrypto@v0.58.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "govulncheck (v1.9.0, run 2026-11-14 on main at 0.6.0) found that the vulnerable code (the package golang.org/x/crypto/openpgp) is not called by any package of blobgate; the module is required by rclone and is not used for OpenPGP."
+    }
+  ],
+  "role": "Project Maintainer"
+}

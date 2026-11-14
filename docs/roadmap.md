@@ -8,8 +8,8 @@ What the project intends to do and not do in the next year. It is a plan of two 
 2. **Memory of a read**: a read holds a whole block (75 MB measured against 47 MB of the module it replaces, [docs/benchmark.md](benchmark.md)); find out whether streaming with a check at the end of the block is acceptable
    to the callers, and if it is, stream.
 3. **More kinds of node under test**: S3 services other than Garage, FTP servers that lack `SIZE` or `REST`, a server that folds the case of names, a server that is slow; and `kill -9` against each kind.
-4. **Supply chain**: keep the releases signed (keyless, with build provenance and a bill of materials), the build repeatable bit for bit, the dependencies current (Dependabot), CI green; add a VEX statement when a finding
-   does not affect the program.
+4. **Supply chain**: keep the releases signed (keyless, with build provenance and a bill of materials), the build repeatable bit for bit, the dependencies current (Dependabot), CI green; keep the VEX document (`vex/blobgate.openvex.json`) current: a finding that does
+   not affect the program is a statement in it.
 5. **Quality**: keep statement coverage at 80% or more and measured in CI; a fuzz target for every new parser; a regression test for every fixed bug.
 6. **Documentation**: keep the reference, the how-to pages and the explanations in step with the code; each claim says what was run.
 7. **Badges**: the OpenSSF Best Practices badge at "passing" and "silver".
