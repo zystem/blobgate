@@ -39,4 +39,4 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -format openvex ./...
 ```
 
 and is brought up to date when a release is made ([release.md](release.md), step 4): a finding that is gone (the module was updated) is taken out, a new one is added with the words that say why it does not affect the program. A finding that does
-affect it is not a VEX statement: it is fixed under the times of [SECURITY.md](../SECURITY.md). As of 2026-11-14 the document has one statement: GO-2026-5932 (`golang.org/x/crypto/openpgp`, which the program does not call).
+affect it is not a VEX statement: it is fixed under the times of [SECURITY.md](../SECURITY.md). As of 2026-11-14 the document has **no statement**: GO-2026-5932 (`golang.org/x/crypto/openpgp`, not called) had one until `golang.org/x/crypto` was updated to v0.59.0, which has the fix, and `govulncheck` reports nothing. The empty document is kept so that it is there when the next finding comes.
