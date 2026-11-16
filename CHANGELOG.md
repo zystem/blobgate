@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Changed
+* The S3 door has always been served over TLS when `BLOBGATE_TLS_CERT_FILE` is set (it is one of the ports); this is now tested (a signed SDK call over https, plain http refused) and written in docs/configuration.md. Nothing in the program changed.
+
 ## [0.6.1] - 2026-11-16
 
 ### Changed

@@ -19,7 +19,7 @@ The tool is `cmd/bench` (the same HTTP calls the core makes, signed as the core 
 
 * **Writes are several times faster** than with the Nim module on the same nodes, and reads are the same within the noise (the 1 GiB read and the small reads are a little lower, 10 to 20 %). Why the Nim module writes slower was not looked for.
 * **Memory is not as good: 75 MB against 47 MB** (115 MB sealed). A read holds the whole block (up to 8 MiB) to check its digest before a byte goes out, a sealed write holds two; the number of blocks held is
-  bounded (`BLOBGATE_THREADS`, 4 since the change of 2026-11-14; the figures below were measured with 8 and not measured again) but the size of a block is not made smaller. The module sets `GOGC=25` to keep the heap near what is live (without it the peak of the same run was 102 MB).
+  bounded (`BLOBGATE_THREADS`, 4 since 0.6.1; the table above was measured with 8; see "The limit of threads" below) but the size of a block is not made smaller. The module sets `GOGC=25` to keep the heap near what is live (without it the peak of the same run was 102 MB).
   "Not worse than Nim" is **not reached** for memory; the figure the task gave (35 MiB for six blocks at once) was not measured here because the Go module holds a block, not a stream.
 * **Sealing costs** about 40 % of the write rate and 20 % of the read rate of 8 MiB blocks, and memory.
 
@@ -43,3 +43,19 @@ The tool is `cmd/bench` (the same HTTP calls the core makes, signed as the core 
 ## Deduplication, 2026-11-14
 
 The cost of `dedup: "tenant"` was measured with the same tool: [deduplication.md](deduplication.md), "What it costs".
+
+## The limit of threads, 2026-11-16
+
+`BLOBGATE_THREADS` went from 8 to 4 in 0.6.1. Measured with `tools/bench/stand.sh go-local 25` (two local nodes, `GOGC=25`, one run of each, the same machine as above), 8 MiB objects, `-workers` clients at once:
+
+| Load | threads 4 | threads 8 |
+|---|---|---|
+| 4 clients, GET, peak memory | 70 MB | 69 MB |
+| 4 clients, sealed, peak memory | 119 MB | 105 MB |
+| 16 clients, GET 8 MiB | 2059 MB/s, peak 128 MB | 2409 MB/s, peak 162 MB |
+| 16 clients, sealed, PUT 8 MiB | 472 MB/s | 665 MB/s |
+| 16 clients, sealed, GET 8 MiB | 1296 MB/s, peak 132 MB | 1598 MB/s, peak 213 MB |
+
+* With 4 clients the limit is never reached: the memory and the speed are the same (the differences are the noise of one run).
+* With 16 clients the peak falls by a fifth (plain) to a third (sealed), and the rate of 8 MiB objects by 15 to 30 %: the reads and sealed writes beyond the fourth wait for a place.
+* One run of each, so a difference of a few per cent is not a finding. The Nim comparison above was not made again.
