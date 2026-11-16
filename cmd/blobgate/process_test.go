@@ -365,7 +365,6 @@ func TestSecretsFromFilesAndTLS(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.cmd.Process.Kill(); _ = p.cmd.Wait() })
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
-	t.Cleanup(func() { t.Log(p.log.String()) })
 	waitFor(t, "the module answers on https", 20*time.Second, func() bool {
 		resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/readyz", p.port))
 		if err != nil {
