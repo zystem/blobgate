@@ -21,18 +21,19 @@ import (
 )
 
 var (
-	url    = flag.String("url", "http://127.0.0.1:18090", "the module")
-	secret = flag.String("secret", "", "the secret of the tenant")
-	tenant = flag.String("tenant", "001", "the tenant")
-	admin  = flag.String("admin", "", "the admin token (to register the store)")
-	nodes  = flag.String("nodes", "", "directories of local nodes, comma separated (registers the store `bench` over them)")
-	keyArg = flag.String("seal", "", "a key text: the store seals its blocks")
-	dedup  = flag.String("dedup", "", `the store's setting dedup ("tenant" or "store"); the loads write the same bytes under many keys, so with it they measure the cost of a copy`)
-	pid    = flag.Int("pid", 0, "the pid of the module, for its memory")
-	big    = flag.Int("gib", 1, "size of the multipart object, GiB")
-	small  = flag.Int("small", 4000, "number of 64 KiB objects")
-	large  = flag.Int("large", 64, "number of 8 MiB objects")
-	noKA   = flag.Bool("nokeepalive", false, "a new connection for every request (the Nim module closes idle connections, and a request that meets one that is closing fails)")
+	url     = flag.String("url", "http://127.0.0.1:18090", "the module")
+	secret  = flag.String("secret", "", "the secret of the tenant")
+	tenant  = flag.String("tenant", "001", "the tenant")
+	admin   = flag.String("admin", "", "the admin token (to register the store)")
+	nodes   = flag.String("nodes", "", "directories of local nodes, comma separated (registers the store `bench` over them)")
+	keyArg  = flag.String("seal", "", "a key text: the store seals its blocks")
+	dedup   = flag.String("dedup", "", `the store's setting dedup ("tenant" or "store"); the loads write the same bytes under many keys, so with it they measure the cost of a copy`)
+	pid     = flag.Int("pid", 0, "the pid of the module, for its memory")
+	big     = flag.Int("gib", 1, "size of the multipart object, GiB")
+	small   = flag.Int("small", 4000, "number of 64 KiB objects")
+	large   = flag.Int("large", 64, "number of 8 MiB objects")
+	workers = flag.Int("workers", 4, "clients at once in the 8 MiB loads (more of them than BLOBGATE_THREADS wait for a place: that is what the memory limit is measured with)")
+	noKA    = flag.Bool("nokeepalive", false, "a new connection for every request (the Nim module closes idle connections, and a request that meets one that is closing fails)")
 )
 
 var client *http.Client
@@ -138,16 +139,16 @@ func main() {
 
 	b8 := bytes.Repeat([]byte("0123456789abcdef"), 8<<20/16)
 	h8 := sha(b8)
-	d := parallel(4, *large, func(i int) {
+	d := parallel(*workers, *large, func(i int) {
 		c, data := call("PUT", obj+fmt.Sprintf("bench/l%d", i), "", map[string]string{"X-Content-SHA256": h8}, b8)
 		must(c, data, "put 8 MiB")
 	})
-	report("PUT 8 MiB, 4 workers", *large, 8<<20, d)
-	d = parallel(4, *large, func(i int) {
+	report(fmt.Sprintf("PUT 8 MiB, %d workers", *workers), *large, 8<<20, d)
+	d = parallel(*workers, *large, func(i int) {
 		c, data := call("GET", obj+fmt.Sprintf("bench/l%d", i), "", map[string]string{"Range": fmt.Sprintf("bytes=0-%d", 8<<20-1)}, nil)
 		must(c, data, "get 8 MiB")
 	})
-	report("GET 8 MiB, 4 workers", *large, 8<<20, d)
+	report(fmt.Sprintf("GET 8 MiB, %d workers", *workers), *large, 8<<20, d)
 
 	b64 := bytes.Repeat([]byte("x"), 64<<10)
 	h64 := sha(b64)

@@ -29,6 +29,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"github.com/zystem/blobgate/internal/auth"
 	"github.com/zystem/blobgate/internal/rq"
 )
@@ -348,8 +352,9 @@ func TestSecretsFromFilesAndTLS(t *testing.T) {
 	pool.AddCert(cert)
 
 	p := &proc{port: freePort(t), log: &bytes.Buffer{}}
+	s3Port := freePort(t)
 	p.cmd = exec.Command(binary(t))
-	p.cmd.Env = append(os.Environ(), "BLOBGATE_RQLITE_URL="+rqURL, fmt.Sprintf("BLOBGATE_PORT=%d", p.port), "BLOBGATE_SHIM_PORT=0",
+	p.cmd.Env = append(os.Environ(), "BLOBGATE_RQLITE_URL="+rqURL, fmt.Sprintf("BLOBGATE_PORT=%d", p.port), "BLOBGATE_SHIM_PORT=0", fmt.Sprintf("BLOBGATE_S3_PORT=%d", s3Port),
 		"BLOBGATE_TENANTS=", "BLOBGATE_TENANTS_FILE="+put("shards", "001="+secret),
 		"BLOBGATE_ADMIN_TOKEN=", "BLOBGATE_ADMIN_TOKEN_FILE="+put("admin", adminT),
 		"BLOBGATE_SEAL_KEY=", "BLOBGATE_SEAL_KEY_FILE="+put("seal", "a-seal-key-for-the-file-test"),
@@ -360,6 +365,7 @@ func TestSecretsFromFilesAndTLS(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.cmd.Process.Kill(); _ = p.cmd.Wait() })
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	t.Cleanup(func() { t.Log(p.log.String()) })
 	waitFor(t, "the module answers on https", 20*time.Second, func() bool {
 		resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/readyz", p.port))
 		if err != nil {
@@ -376,6 +382,24 @@ func TestSecretsFromFilesAndTLS(t *testing.T) {
 	}
 	if _, err := (&http.Client{}).Get(fmt.Sprintf("https://127.0.0.1:%d/readyz", p.port)); err == nil {
 		t.Fatal("a client that does not trust the certificate was served")
+	}
+	// the S3 door is on TLS too: a signed call of the SDK over https is answered, plain http is not, and a client that does not trust the certificate is not served
+	s3c := s3.NewFromConfig(aws.Config{Region: "eu-west-1", Credentials: credentials.NewStaticCredentialsProvider("001", auth.S3Secret(secret), ""), HTTPClient: client},
+		func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(fmt.Sprintf("https://127.0.0.1:%d", s3Port))
+			o.UsePathStyle = true
+		})
+	if _, err := s3c.ListBuckets(context.Background(), &s3.ListBucketsInput{}); err != nil {
+		t.Fatalf("a signed call to the S3 door over https: %v", err)
+	}
+	if resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", s3Port)); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			t.Fatal("plain http was answered on the TLS port of the S3 door")
+		}
+	}
+	if _, err := (&http.Client{}).Get(fmt.Sprintf("https://127.0.0.1:%d/healthz", s3Port)); err == nil {
+		t.Fatal("a client that does not trust the certificate was served by the S3 door")
 	}
 	// the admin token read from its file is the one that works
 	req, _ := http.NewRequest("GET", fmt.Sprintf("https://127.0.0.1:%d/v1/admin/stores", p.port), nil)
