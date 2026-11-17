@@ -239,9 +239,6 @@ func TestS3Refusals(t *testing.T) {
 		t.Fatalf("other tenant list: %v %+v", err, lo)
 	}
 	// what is not done says so
-	if _, err := good.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("k2"), CopySource: aws.String("main/k")}); err == nil || !strings.Contains(err.Error(), "NotImplemented") {
-		t.Fatalf("copy: %v", err)
-	}
 	if _, err := good.PutBucketAcl(ctx, &s3.PutBucketAclInput{Bucket: aws.String("main"), ACL: types.BucketCannedACLPrivate}); err == nil || !strings.Contains(err.Error(), "NotImplemented") {
 		t.Fatalf("acl: %v", err)
 	}
@@ -385,4 +382,137 @@ func TestS3AwkwardKeys(t *testing.T) {
 			t.Fatalf("the list lacks %q: %v", k, got)
 		}
 	}
+}
+
+// CopyObject: inside a store of sets it takes a reference on the set (nothing is stored again, whatever the size, an upload in parts included), between stores or with no sets it is a copy of the bytes;
+// the metadata is kept or replaced, a copy onto itself is refused unless it replaces the metadata.
+func TestS3CopyObject(t *testing.T) {
+	r := newRig(t, nil)
+	r.dedupStore("tenant", 0, "")
+	other := t.TempDir()
+	if code, d := r.admin("PUT", "/v1/admin/stores/plain", map[string]any{"kind": "mirror",
+		"nodes": []any{map[string]any{"remote": ":local:" + other + "/a"}, map[string]any{"remote": ":local:" + other + "/b"}}}); code != 200 {
+		t.Fatalf("register: %d %s", code, d)
+	}
+	c := r.s3Client("001", secret1)
+	ctx := context.Background()
+	body := pattern(9<<20 + 17)
+	put, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("main"), Key: aws.String("dir/a b"), Body: bytes.NewReader(body), ContentType: aws.String("text/x-one"), Metadata: map[string]string{"owner": "me"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(bucket, key string) ([]byte, *s3.GetObjectOutput) {
+		t.Helper()
+		g, err := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+		if err != nil {
+			t.Fatalf("get %s/%s: %v", bucket, key, err)
+		}
+		d, _ := io.ReadAll(g.Body)
+		return d, g
+	}
+	sets := r.dbCount("storage_sets")
+
+	// in the store: a reference, the metadata kept
+	cp, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("copy/b"), CopySource: aws.String("main/dir/a%20b")})
+	if err != nil {
+		t.Fatalf("copy in the store: %v", err)
+	}
+	if aws.ToString(cp.CopyObjectResult.ETag) != aws.ToString(put.ETag) {
+		t.Fatalf("the ETag of the copy is %s, of the source %s", aws.ToString(cp.CopyObjectResult.ETag), aws.ToString(put.ETag))
+	}
+	d, g := read("main", "copy/b")
+	if !bytes.Equal(d, body) || aws.ToString(g.ContentType) != "text/x-one" || g.Metadata["owner"] != "me" {
+		t.Fatalf("the copy is not the source: %d bytes, %s, %v", len(d), aws.ToString(g.ContentType), g.Metadata)
+	}
+	if got := r.dbCount("storage_sets"); got != sets {
+		t.Fatalf("a copy in the store made a set: %d sets, were %d", got, sets)
+	}
+	r.refsAreTheRows()
+
+	// the metadata replaced
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("copy/c"), CopySource: aws.String("/main/dir/a%20b"), MetadataDirective: types.MetadataDirectiveReplace,
+		ContentType: aws.String("text/x-two"), Metadata: map[string]string{"owner": "you"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, g = read("main", "copy/c"); aws.ToString(g.ContentType) != "text/x-two" || g.Metadata["owner"] != "you" {
+		t.Fatalf("the metadata was not replaced: %s %v", aws.ToString(g.ContentType), g.Metadata)
+	}
+	// onto itself: refused, unless it replaces the metadata
+	_, err = c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("copy/b"), CopySource: aws.String("main/copy/b")})
+	if err == nil || !strings.Contains(err.Error(), "InvalidRequest") {
+		t.Fatalf("a copy onto itself: %v", err)
+	}
+	if _, err = c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("copy/b"), CopySource: aws.String("main/copy/b"), MetadataDirective: types.MetadataDirectiveReplace,
+		Metadata: map[string]string{"owner": "again"}}); err != nil {
+		t.Fatalf("a copy onto itself that replaces the metadata: %v", err)
+	}
+	if d, g = read("main", "copy/b"); !bytes.Equal(d, body) || g.Metadata["owner"] != "again" {
+		t.Fatalf("the object that replaced its metadata: %d bytes %v", len(d), g.Metadata)
+	}
+	r.refsAreTheRows()
+
+	// the source goes, the copies stay
+	if _, err := c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String("main"), Key: aws.String("dir/a b")}); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ = read("main", "copy/c"); !bytes.Equal(d, body) {
+		t.Fatal("the copy does not outlive the source")
+	}
+
+	// between stores: the bytes, and back (the sets of the first store give a reference to the bytes written again)
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("plain"), Key: aws.String("p/one"), CopySource: aws.String("main/copy/c")}); err != nil {
+		t.Fatalf("copy to another store: %v", err)
+	}
+	d, g = read("plain", "p/one")
+	if !bytes.Equal(d, body) || aws.ToString(g.ContentType) != "text/x-two" || g.Metadata["owner"] != "you" {
+		t.Fatalf("the copy in the other store: %d bytes %s %v", len(d), aws.ToString(g.ContentType), g.Metadata)
+	}
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("back"), CopySource: aws.String("plain/p/one")}); err != nil {
+		t.Fatalf("copy back: %v", err)
+	}
+	if d, _ = read("main", "back"); !bytes.Equal(d, body) {
+		t.Fatal("the copy that came back is not the source")
+	}
+	if got := r.dbCount("storage_sets"); got != sets {
+		t.Fatalf("the bytes written again did not find their set: %d sets, were %d", got, sets)
+	}
+	r.refsAreTheRows()
+
+	// what it refuses and what is not there
+	for what, in := range map[string]*s3.CopyObjectInput{
+		"NoSuchKey":       {Bucket: aws.String("main"), Key: aws.String("x"), CopySource: aws.String("main/not-there")},
+		"NoSuchBucket":    {Bucket: aws.String("main"), Key: aws.String("x"), CopySource: aws.String("nostore/k")},
+		"NotImplemented":  {Bucket: aws.String("main"), Key: aws.String("x"), CopySource: aws.String("main/copy/c?versionId=1")},
+		"InvalidArgument": {Bucket: aws.String("main"), Key: aws.String("x"), CopySource: aws.String("main")},
+	} {
+		if _, err := c.CopyObject(ctx, in); err == nil || !strings.Contains(err.Error(), what) {
+			t.Errorf("%s: %v", what, err)
+		}
+	}
+	if _, err := c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String("main"), Key: aws.String("x")}); err == nil {
+		t.Error("a refused copy left an object")
+	}
+
+	// the set removed between the read of the source and the transaction: the answer is NoSuchKey and the old destination is untouched
+	zbody := pattern(5000)
+	if _, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("main"), Key: aws.String("z"), Body: bytes.NewReader(zbody)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("main"), Key: aws.String("src"), Body: bytes.NewReader(pattern(7000))}); err != nil {
+		t.Fatal(err)
+	}
+	r.s.cfg.CrashAt = func(p string) {
+		if p == "copy:before" {
+			_, _ = c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String("main"), Key: aws.String("src")})
+			r.sweepSets()
+		}
+	}
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("z"), CopySource: aws.String("main/src")}); err == nil || !strings.Contains(err.Error(), "NoSuchKey") {
+		t.Fatalf("a copy of a set that went: %v", err)
+	}
+	r.s.cfg.CrashAt = nil
+	if d, _ = read("main", "z"); !bytes.Equal(d, zbody) {
+		t.Fatal("the destination that the failed copy was to replace is gone")
+	}
+	r.refsAreTheRows()
 }

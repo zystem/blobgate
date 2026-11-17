@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Added
+* **CopyObject in the S3 door** (`aws s3 cp s3://a s3://b`, `mv`, `rclone` server-side copy): in one store of sets (`dedup` on) the copy takes a reference on the set, in one transaction, with no byte read or written; any other copy reads the source and writes the destination through a pipe. `x-amz-metadata-directive` `COPY` or `REPLACE`. See docs/s3-reference.md.
+
 ### Changed
 * The S3 door has always been served over TLS when `BLOBGATE_TLS_CERT_FILE` is set (it is one of the ports); this is now tested (a signed SDK call over https, plain http refused) and written in docs/configuration.md. Nothing in the program changed.
 

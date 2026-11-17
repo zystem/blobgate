@@ -541,7 +541,7 @@ func (s *Server) s3Object(w http.ResponseWriter, r *http.Request, call *auth.S3C
 		}
 	case http.MethodPut:
 		if r.Header.Get("X-Amz-Copy-Source") != "" {
-			s3Fail(w, r, 501, "NotImplemented", "CopyObject is not supported: read the object and write it (or use ?link of the core)")
+			s.s3Copy(w, r, tenant, bucket, key)
 			return
 		}
 		if upload != "" || part != "" {
