@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -515,4 +516,79 @@ func TestS3CopyObject(t *testing.T) {
 		t.Fatal("the destination that the failed copy was to replace is gone")
 	}
 	r.refsAreTheRows()
+}
+
+// UploadPartCopy: an object is made of ranges of another (what the AWS CLI does above its multipart threshold), with the conditions on the source that the tools send.
+func TestS3UploadPartCopy(t *testing.T) {
+	r := newRig(t, nil)
+	r.dedupStore("tenant", 0, "")
+	c := r.s3Client("001", secret1)
+	ctx := context.Background()
+	body := pattern(20<<20 + 5)
+	put, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("main"), Key: aws.String("src"), Body: bytes.NewReader(body)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const part = 8 << 20
+	cu, err := c.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done []types.CompletedPart
+	for n, off := int32(1), 0; off < len(body); n, off = n+1, off+part {
+		end := min(off+part, len(body)) - 1
+		up, err := c.UploadPartCopy(ctx, &s3.UploadPartCopyInput{Bucket: aws.String("main"), Key: aws.String("dst"), UploadId: cu.UploadId, PartNumber: aws.Int32(n),
+			CopySource: aws.String("main/src"), CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", off, end)), CopySourceIfMatch: put.ETag})
+		if err != nil {
+			t.Fatalf("part %d: %v", n, err)
+		}
+		done = append(done, types.CompletedPart{ETag: up.CopyPartResult.ETag, PartNumber: aws.Int32(n)})
+	}
+	if _, err := c.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String("dst"), UploadId: cu.UploadId, MultipartUpload: &types.CompletedMultipartUpload{Parts: done}}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("main"), Key: aws.String("dst")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := io.ReadAll(g.Body); !bytes.Equal(d, body) {
+		t.Fatalf("the object made of ranges is not the source: %d bytes", len(d))
+	}
+	r.refsAreTheRows()
+
+	// the conditions, on a copy of the whole object and on a part
+	for name, in := range map[string]*s3.CopyObjectInput{
+		"if-match that is not the tag":         {CopySourceIfMatch: aws.String(`"not-the-tag"`)},
+		"if-none-match that is the tag":        {CopySourceIfNoneMatch: put.ETag},
+		"if-unmodified-since before the write": {CopySourceIfUnmodifiedSince: aws.Time(time.Unix(1_000_000_000, 0))},
+	} {
+		in.Bucket, in.Key, in.CopySource = aws.String("main"), aws.String("c-"+strings.ReplaceAll(name, " ", "-")), aws.String("main/src")
+		if _, err := c.CopyObject(ctx, in); err == nil || !strings.Contains(err.Error(), "PreconditionFailed") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("c-ok"), CopySource: aws.String("main/src"), CopySourceIfMatch: put.ETag,
+		CopySourceIfModifiedSince: aws.Time(time.Unix(1_000_000_000, 0))}); err != nil {
+		t.Errorf("conditions that hold: %v", err)
+	}
+
+	// what is refused: a range past the end, a part that is longer than a block, a range that is not first-last, an upload that is not there
+	for what, in := range map[string]*s3.UploadPartCopyInput{
+		"InvalidRange":    {CopySourceRange: aws.String(fmt.Sprintf("bytes=0-%d", len(body)))},
+		"EntityTooLarge":  {},
+		"InvalidArgument": {CopySourceRange: aws.String("bytes=5-")},
+		"NoSuchUpload":    {CopySourceRange: aws.String("bytes=0-9"), UploadId: aws.String("0123456789abcdef0123456789abcdef")},
+	} {
+		in.Bucket, in.Key, in.CopySource, in.PartNumber = aws.String("main"), aws.String("dst2"), aws.String("main/src"), aws.Int32(1)
+		if in.UploadId == nil {
+			cu2, err := c.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String("dst2")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.UploadId = cu2.UploadId
+		}
+		if _, err := c.UploadPartCopy(ctx, in); err == nil || !strings.Contains(err.Error(), what) {
+			t.Errorf("%s: %v", what, err)
+		}
+	}
 }
