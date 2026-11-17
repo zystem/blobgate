@@ -163,6 +163,12 @@ func main() {
 		go func() { defer bg.Done(); backupLoop(ctx, worker, url, every, log) }()
 	}
 
+	// the probe of the nodes for /status (every node is asked whether it answers; 0: not asked, every node is "unknown")
+	if every := sec("BLOBGATE_PROBE_SECONDS", 10); every > 0 {
+		bg.Add(1)
+		go func() { defer bg.Done(); srv.RunProbes(ctx, every) }()
+	}
+
 	port := envInt("BLOBGATE_PORT", 18090)
 	shimPort := envInt("BLOBGATE_SHIM_PORT", 18091)
 	servers := []*http.Server{{Addr: fmt.Sprintf(":%d", port), Handler: srv.Handler(), ReadHeaderTimeout: 30 * time.Second}}

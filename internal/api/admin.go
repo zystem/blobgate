@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ type nodeBody struct {
 	Backend string            `json:"backend"`
 	Options map[string]string `json:"options"`
 	Path    string            `json:"path"`
+	Label   string            `json:"label"`   // the name of the node on the public status page (optional)
 	Secrets map[string]string `json:"secrets"` // options that are sealed in the database (a password): obscured for rclone when the node is opened
 }
 
@@ -63,6 +65,9 @@ func (b storeBody) parse() (store.Config, store.Secrets, error) {
 	}
 	for _, n := range b.Nodes {
 		spec := store.NodeSpec{Backend: n.Backend, Options: n.Options, Path: n.Path}
+		if n.Label != "" && !store.ValidLabel(n.Label) {
+			return cfg, sec, errors.New("a node label is 1..32 letters, digits, . _ and -: it is shown on the public status page")
+		}
 		if n.Remote != "" {
 			var err error
 			if spec, err = store.ParseRemote(n.Remote); err != nil {
@@ -72,6 +77,7 @@ func (b storeBody) parse() (store.Config, store.Secrets, error) {
 				spec.Options[k] = v
 			}
 		}
+		spec.Label = n.Label
 		cfg.Nodes = append(cfg.Nodes, spec)
 		sec.Nodes = append(sec.Nodes, n.Secrets)
 	}

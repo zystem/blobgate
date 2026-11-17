@@ -555,7 +555,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	}
 	// what the server does answer, as (method, template of the path): the concrete requests below are made from the templates
 	impl := []string{
-		"GET /healthz", "GET /readyz", "GET /metrics", "GET /v1/openapi.yaml", "GET /v1/stores", "GET /v1/stores/{store}/objects", "GET /v1/stores/{store}/usage",
+		"GET /healthz", "GET /readyz", "GET /metrics", "GET /status", "GET /status.js", "GET /status.css", "GET /status.json", "GET /v1/admin/status", "GET /v1/openapi.yaml", "GET /v1/stores", "GET /v1/stores/{store}/objects", "GET /v1/stores/{store}/usage",
 		"GET /v1/admin/quotas", "PUT /v1/admin/quotas/{store}/{tenant}", "DELETE /v1/admin/quotas/{store}/{tenant}", "GET /v1/admin/stores/{name}:usage",
 		"PUT /v1/stores/{store}/objects/{key}", "GET /v1/stores/{store}/objects/{key}", "HEAD /v1/stores/{store}/objects/{key}", "POST /v1/stores/{store}/objects/{key}", "DELETE /v1/stores/{store}/objects/{key}",
 		"GET /v1/admin/stores", "PUT /v1/admin/stores/{name}", "DELETE /v1/admin/stores/{name}", "POST /v1/admin/stores/{name}:check", "POST /v1/admin/stores/{name}:default", "POST /v1/admin/stores/{name}:reconcile",

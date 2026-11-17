@@ -171,6 +171,37 @@ paths:
       responses:
         "200": {description: '{"status":"ready"}'}
         "503": {description: '{"status":"not_ready"}'}
+  /status:
+    get:
+      summary: "the page with the state of the nodes of every store (HTML; it fetches /status.json, and /v1/admin/status when it is given the admin token)"
+      security: []
+      responses:
+        "200": {description: text/html}
+  /status.js:
+    get:
+      summary: the script of the status page
+      security: []
+      responses:
+        "200": {description: text/javascript}
+  /status.css:
+    get:
+      summary: the style of the status page
+      security: []
+      responses:
+        "200": {description: text/css}
+  /status.json:
+    get:
+      summary: "the state of the nodes, public: {status, stores: [{name: \"store 1\", state, nodes: [{name, state}]}]}; a node is named by its label, or backend-position; no store name, id, error or figure"
+      security: []
+      responses:
+        "200": {description: "status and state are green, yellow, red or unknown; a node's state is ok, lagging, dead, full, slow or unknown (docs/status-page.md)"}
+  /v1/admin/status:
+    get:
+      summary: "the same with the details: store names, node ids, backend, answer time (ms), the last error, copies waiting and the age of the oldest, free and total room, when it was checked"
+      security: [{adminToken: []}]
+      responses:
+        "200": {description: ok}
+        "401": {$ref: "#/components/responses/Unauthorized"}
   /v1/stores:
     get:
       summary: the stores and the default one, no secrets

@@ -171,6 +171,8 @@ func Route(method, path string, query map[string][]string, shim bool) string {
 		return "health"
 	case path == "/metrics":
 		return "metrics"
+	case path == "/status" || path == "/status.json" || path == "/status.js" || path == "/status.css":
+		return "status"
 	case path == "/v1/openapi.yaml":
 		return "openapi"
 	case path == "/v1/stores":

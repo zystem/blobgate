@@ -21,6 +21,8 @@ type NodeSpec struct {
 	Backend string            `json:"backend"`
 	Options map[string]string `json:"options,omitempty"`
 	Path    string            `json:"path,omitempty"`
+	// Label is the name of the node on the public status page (`rack-a`, `dc2-ftp`): the operator chooses it and knows it is public. It is not part of ID(): a node with a label is the same node.
+	Label string `json:"label,omitempty"`
 }
 
 // CurrentLayout is the version of how blocks lie on the nodes (the path of a block, the escaping of a key). A store records the one it was written with, and a program refuses a store with a
@@ -50,6 +52,28 @@ type Secrets struct {
 	Nodes    []map[string]string `json:"nodes,omitempty"`
 	S3Secret string              `json:"s3_secret,omitempty"`
 	EncKeys  map[string]string   `json:"enc_keys,omitempty"` // key id -> the text the key is made of; every key an object was sealed with must stay, or the object cannot be read
+}
+
+// ValidLabel says whether this may be the public label of a node: 1..32 letters, digits, `.`, `_` and `-`.
+func ValidLabel(l string) bool {
+	if len(l) < 1 || len(l) > 32 {
+		return false
+	}
+	for i := 0; i < len(l); i++ {
+		c := l[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// PublicName is what the public status page calls the node: its label, or the backend and the place of the node in its store (`webdav-2`).
+func (n NodeSpec) PublicName(pos int) string {
+	if n.Label != "" {
+		return n.Label
+	}
+	return fmt.Sprintf("%s-%d", n.Backend, pos+1)
 }
 
 // ValidName says whether this may be the name of a store: lowercase letters, digits and -, starting with a letter, at most 32.
@@ -193,7 +217,7 @@ func (c Config) Specs(s Secrets) []NodeSpec {
 				o[k] = v
 			}
 		}
-		out[i] = NodeSpec{Backend: n.Backend, Options: o, Path: n.Path}
+		out[i] = NodeSpec{Backend: n.Backend, Options: o, Path: n.Path, Label: n.Label}
 	}
 	return out
 }
