@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-17
+
 ### Added
 * **CopyObject in the S3 door** (`aws s3 cp s3://a s3://b`, `mv`, `rclone` server-side copy): in one store of sets (`dedup` on) the copy takes a reference on the set, in one transaction, with no byte read or written; any other copy reads the source and writes the destination through a pipe. `x-amz-metadata-directive` `COPY` or `REPLACE`. See docs/s3-reference.md.
 
