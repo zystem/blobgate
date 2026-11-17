@@ -20,7 +20,6 @@ What the project intends to do and not do in the next year. It is a plan of two 
 - Deduplication below the object (the same block in different objects, blocks cut by content): the whole-object kind (0.5.0) and the check before the write (`?link`, 0.6.0) are built, and the owner has said that
   below the object is not wanted.
 - In the S3 door: ListMultipartUploads, UploadPartCopy, an ETag that is the MD5 of a multipart object too.
-- A small web page with the state of the backends of a mirror (the nodes of a store): green (answers and has everything), lagging (answers, but copies wait in the repair queue), dead (does not answer), and others as they are found (for example full, read-only, slow). Read-only, over the data the module has already (node errors, the repair queue, the free room); asked for by the owner on 2026-11-17, not designed yet.
 - Packing small blocks into larger files for nodes that are slow with many small files (FTP).
 - A bundled node (Garage) in the chart.
 

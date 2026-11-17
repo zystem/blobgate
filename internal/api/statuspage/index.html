@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blobgate status</title>
+<link rel="stylesheet" href="/status.css">
+</head>
+<body>
+<main>
+  <h1>Blobgate status</h1>
+  <p id="overall" class="overall unknown" role="status">Loading…</p>
+  <div id="stores"></div>
+  <p class="note">As seen by the replica that answered this page: it asks every node regularly (BLOBGATE_PROBE_SECONDS). The queue is shared by all replicas.</p>
+  <form id="auth" autocomplete="off">
+    <label for="token">Admin token (for the details; kept in this tab only)</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false">
+    <button type="submit">Show details</button>
+    <button type="button" id="forget">Forget token</button>
+  </form>
+  <p id="message" class="note" role="alert"></p>
+</main>
+<script src="/status.js"></script>
+</body>
+</html>

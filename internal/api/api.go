@@ -56,6 +56,7 @@ type Server struct {
 	reads chan struct{}
 	seals chan struct{} // blocks being sealed: each holds one in memory
 	log   *slog.Logger
+	book  statusBook
 }
 
 // New makes a server.
@@ -214,7 +215,7 @@ func (s *Server) logged(h http.Handler, door string) http.Handler {
 			route = metrics.Route(r.Method, r.URL.Path, r.URL.Query(), door == "shim")
 		}
 		metrics.Request(route, r.Method, sw.code, time.Since(start), max(r.ContentLength, 0), sw.bytes)
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" || isStatusPath(r.URL.Path) {
 			return
 		}
 		s.log.Info("request", "method", r.Method, "path", logPath(r.URL.Path), "status", sw.code, "ms", time.Since(start).Milliseconds(), "bytes_out", sw.bytes, "bytes_in", max(r.ContentLength, 0))
@@ -249,6 +250,11 @@ func (s *Server) Handler() http.Handler {
 		}
 		metrics.Handler().ServeHTTP(w, r)
 	})
+	mux.HandleFunc("/status", s.statusPage)
+	mux.HandleFunc("/status.js", s.statusPage)
+	mux.HandleFunc("/status.css", s.statusPage)
+	mux.HandleFunc("/status.json", s.statusPublic)
+	mux.HandleFunc("/v1/admin/status", s.statusAdmin)
 	mux.HandleFunc("/v1/stores", s.listStores)
 	mux.HandleFunc("/v1/stores/", s.coreObject)
 	mux.HandleFunc("/v1/admin/quotas", s.adminQuotas)
