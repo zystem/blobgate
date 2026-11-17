@@ -21,3 +21,7 @@ once more. The schema gains columns at start; nothing is to be done by hand.
 
 **0.1.0** is the first release; there is nothing to upgrade from. The Nim module that this one replaces in CiNim used other tables for objects (`storage_objects` without generations); the stores start empty, as decided
 for CiNim (D-60), and nothing is read from the old layout.
+
+**0.6.1** lowers the default of `BLOBGATE_THREADS` from 8 to 4 (at most four blocks held in memory at once by reads and sealed writes; more reads wait for a place). Set `BLOBGATE_THREADS=8` to keep the old value.
+
+**0.7.0** adds CopyObject to the S3 door and changes nothing that is stored or set: there is nothing to do by hand.
