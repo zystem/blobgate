@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Changed
+* Tests only: the S3 door, deduplication, copies by reference and by ranges, and the status page are tested with real servers (SFTPGo's WebDAV and FTP, Garage), in CI with `BLOBGATE_DOCKER_TESTS=1`. No fault was found in the program.
+
 ## [0.9.0] - 2026-11-18
 
 ### Added

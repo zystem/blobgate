@@ -4,9 +4,11 @@ package api
 // `drakkan/sftpgo`, and run only with BLOBGATE_DOCKER_TESTS=1 (and BLOBGATE_RQLITE_URL, as the other tests of the API).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +16,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/zystem/blobgate/internal/maint"
 	"github.com/zystem/blobgate/internal/rq"
@@ -251,5 +257,179 @@ func TestRealConcurrentWritersOneParent(t *testing.T) {
 		if e := <-errs; e != "" {
 			t.Error(e)
 		}
+	}
+}
+
+// The S3 door, deduplication, the copies and the status page on real servers: a mirror of a WebDAV node and an FTP node (SFTPGo) and a store that is a Garage bucket. Objects of 20 MiB in parts, a
+// copy that stores nothing, a copy by ranges, a copy between the two kinds of store, deletes that leave nothing on the nodes, and a node that goes away (dead on the page, lagging when a copy waits,
+// green again when the repair has run).
+func TestRealS3DoorDedupCopyAndStatus(t *testing.T) {
+	dav, ftp, g := startSFTPGo(t, "dav5"), startSFTPGo(t, "ftp5"), startGarage(t)
+	r := newRig(t, nil)
+	mixNodes := []any{dav.webdav(), ftp.ftp()}
+	mixNodes[0].(map[string]any)["label"], mixNodes[1].(map[string]any)["label"] = "dav-box", "ftp-box"
+	if code, d := r.admin("PUT", "/v1/admin/stores/mix", map[string]any{"kind": "mirror", "default": true, "min_acks": 1, "dedup": "tenant", "nodes": mixNodes}); code != 200 {
+		t.Fatalf("register mix: %d %s", code, d)
+	}
+	if code, d := r.admin("PUT", "/v1/admin/stores/gar", g.store(map[string]any{"default": false, "dedup": "tenant"})); code != 200 {
+		t.Fatalf("register gar: %d %s", code, d)
+	}
+	c := r.s3Client("001", secret1)
+	ctx := context.Background()
+	body := pattern(20<<20 + 321)
+	read := func(bucket, key string) []byte {
+		t.Helper()
+		got, err := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+		if err != nil {
+			t.Fatalf("get %s/%s: %v", bucket, key, err)
+		}
+		d, _ := io.ReadAll(got.Body)
+		return d
+	}
+
+	for _, bucket := range []string{"mix", "gar"} {
+		if err := uploadParts(ctx, c, bucket, "orig", body, 8<<20); err != nil {
+			t.Fatalf("%s: upload in parts: %v", bucket, err)
+		}
+		if !bytes.Equal(read(bucket, "orig"), body) {
+			t.Fatalf("%s: the object written in parts is not what was sent", bucket)
+		}
+		sets, filesDav := r.dbCount("storage_sets"), len(dav.files())
+		// a copy in the store stores nothing
+		if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String(bucket), Key: aws.String("copy"), CopySource: aws.String(bucket + "/orig")}); err != nil {
+			t.Fatalf("%s: copy: %v", bucket, err)
+		}
+		if r.dbCount("storage_sets") != sets || len(dav.files()) != filesDav {
+			t.Fatalf("%s: a copy in the store stored something: %d sets (were %d), %d files on the node (were %d)", bucket, r.dbCount("storage_sets"), sets, len(dav.files()), filesDav)
+		}
+		// a copy by ranges (what the AWS CLI does)
+		cu, err := c.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{Bucket: aws.String(bucket), Key: aws.String("ranges")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var done []types.CompletedPart
+		for n, off := int32(1), 0; off < len(body); n, off = n+1, off+8<<20 {
+			end := min(off+8<<20, len(body)) - 1
+			up, err := c.UploadPartCopy(ctx, &s3.UploadPartCopyInput{Bucket: aws.String(bucket), Key: aws.String("ranges"), UploadId: cu.UploadId, PartNumber: aws.Int32(n),
+				CopySource: aws.String(bucket + "/orig"), CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", off, end))})
+			if err != nil {
+				t.Fatalf("%s: part %d: %v", bucket, n, err)
+			}
+			done = append(done, types.CompletedPart{ETag: up.CopyPartResult.ETag, PartNumber: aws.Int32(n)})
+		}
+		if _, err := c.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{Bucket: aws.String(bucket), Key: aws.String("ranges"), UploadId: cu.UploadId, MultipartUpload: &types.CompletedMultipartUpload{Parts: done}}); err != nil {
+			t.Fatalf("%s: complete: %v", bucket, err)
+		}
+		if !bytes.Equal(read(bucket, "copy"), body) || !bytes.Equal(read(bucket, "ranges"), body) {
+			t.Fatalf("%s: a copy is not the source", bucket)
+		}
+		lo, err := c.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+		if err != nil || len(lo.Contents) != 3 {
+			t.Fatalf("%s: list: %v %d", bucket, err, len(lo.Contents))
+		}
+		r.refsAreTheRows()
+	}
+	// between the two kinds of store, by bytes, and back
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("gar"), Key: aws.String("from-mix"), CopySource: aws.String("mix/orig")}); err != nil {
+		t.Fatalf("copy from the mirror to the bucket: %v", err)
+	}
+	if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("mix"), Key: aws.String("from-gar"), CopySource: aws.String("gar/from-mix")}); err != nil {
+		t.Fatalf("copy back: %v", err)
+	}
+	if !bytes.Equal(read("gar", "from-mix"), body) || !bytes.Equal(read("mix", "from-gar"), body) {
+		t.Fatal("the copies between the stores are not the source")
+	}
+	r.refsAreTheRows()
+
+	// a node that goes away: dead on the page after three probes, the store goes on (min_acks 1) and queues the copy, which lags when it has waited; back, the repair gives it the block, green again
+	status := func() statusView {
+		t.Helper()
+		code, d, _ := r.do("GET", "/status.json", nil, nil)
+		var v statusView
+		if code != 200 || json.Unmarshal(d, &v) != nil {
+			t.Fatalf("status: %d %s", code, d)
+		}
+		return v
+	}
+	nodeOf := func(v statusView, name string) string {
+		for _, s := range v.Stores {
+			for _, n := range s.Nodes {
+				if n.Name == name {
+					return n.State
+				}
+			}
+		}
+		return "missing"
+	}
+	r.s.ProbeOnce(ctx)
+	if v := status(); nodeOf(v, "dav-box") != "ok" || nodeOf(v, "ftp-box") != "ok" {
+		t.Fatalf("both nodes answer: %+v", v)
+	}
+	ftp.docker("stop", "-t", "1")
+	for i := 0; i < 3; i++ {
+		r.s.ProbeOnce(ctx)
+	}
+	if v := status(); nodeOf(v, "ftp-box") != "dead" || nodeOf(v, "dav-box") != "ok" {
+		t.Fatalf("the FTP node is away: %+v", v)
+	}
+	if _, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("mix"), Key: aws.String("while-away"), Body: bytes.NewReader(pattern(300000))}); err != nil {
+		t.Fatalf("a write with one node away: %v", err)
+	}
+	if r.dbCount("storage_repair") < 1 {
+		t.Fatal("the copy for the node that is away was not queued")
+	}
+	// the port of the container was free for a moment and another program on the machine may have taken it: ask again a few times
+	for i := 0; ; i++ {
+		out, err := exec.Command("docker", "start", ftp.name).CombinedOutput()
+		if err == nil {
+			break
+		}
+		if i == 5 {
+			t.Fatalf("docker start: %v %s", err, out)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	time.Sleep(3 * time.Second)
+	r.s.ProbeOnce(ctx)
+	if _, err := r.dbc.Exec(ctx, true, rq.S("UPDATE storage_repair SET since = ?", time.Now().Add(-10*time.Minute).Unix())); err != nil {
+		t.Fatal(err)
+	}
+	r.s.book.mu.Lock()
+	r.s.book.queue = nil
+	r.s.book.mu.Unlock()
+	if v := status(); nodeOf(v, "ftp-box") != "lagging" {
+		t.Fatalf("the node is back and a copy has waited long: %+v", v)
+	}
+	w := r.worker("w5", func(c *maint.Config) { c.RetryBase = time.Second })
+	w.Lease(ctx, "repair")
+	for i := 0; i < 8 && r.dbCount("storage_repair") > 0; i++ {
+		w.Pass(ctx)
+		time.Sleep(1500 * time.Millisecond)
+	}
+	r.s.book.mu.Lock()
+	r.s.book.queue = nil
+	r.s.book.mu.Unlock()
+	if v := status(); nodeOf(v, "ftp-box") != "ok" || nodeOf(v, "dav-box") != "ok" {
+		t.Fatalf("after the repair: %+v", v)
+	}
+
+	// deletes leave nothing on the nodes once the worker has swept the sets
+	for _, bucket := range []string{"mix", "gar"} {
+		lo, _ := c.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+		var ids []types.ObjectIdentifier
+		for _, o := range lo.Contents {
+			ids = append(ids, types.ObjectIdentifier{Key: o.Key})
+		}
+		if _, err := c.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: &types.Delete{Objects: ids}}); err != nil {
+			t.Fatalf("%s: delete: %v", bucket, err)
+		}
+	}
+	for i := 0; i < 8 && (r.dbCount("storage_sets") > 0 || r.dbCount("storage_repair") > 0 || len(dav.files()) > 0 || len(ftp.files()) > 0); i++ {
+		r.sweepSets()
+		w.Pass(ctx)
+		time.Sleep(1500 * time.Millisecond)
+	}
+	if r.dbCount("storage_sets") != 0 || len(dav.files()) != 0 || len(ftp.files()) != 0 {
+		t.Fatalf("what the deletes leave: %d sets, %v on the WebDAV node, %v on the FTP node", r.dbCount("storage_sets"), dav.files(), ftp.files())
 	}
 }
