@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-18
+
 ### Added
 * **A status page** (`/status`, `/status.json` open; `/v1/admin/status` with the admin token) on the main port: every node of every store is `ok`, `lagging`, `dead`, `full`, `slow` or `unknown`, and every store green, yellow or red. The open view has no store name, id, error or figure; a node is named by its optional `label` (`"label"` of a node when a store is registered) or `backend-position`. Every node is probed every `BLOBGATE_PROBE_SECONDS` (10). See docs/status-page.md.
 

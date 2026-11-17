@@ -59,3 +59,20 @@ The cost of `dedup: "tenant"` was measured with the same tool: [deduplication.md
 * With 4 clients the limit is never reached: the memory and the speed are the same (the differences are the noise of one run).
 * With 16 clients the peak falls by a fifth (plain) to a third (sealed), and the rate of 8 MiB objects by 15 to 30 %: the reads and sealed writes beyond the fourth wait for a place.
 * One run of each, so a difference of a few per cent is not a finding. The Nim comparison above was not made again.
+
+### On a small machine, 2026-11-18
+
+The same load on another host: a virtual machine with 2 cores and 1.7 GB, AlmaLinux 10, the nodes on its disk (not `/dev/shm`), rqlite as a process on the same host, one run of each, `GOGC=25`, 32 clients, 96 objects of 8 MiB
+(`cmd/bench -workers 32 -large 96 -small 500`). Peak memory of the module process (`VmHWM`):
+
+| Threads | Read | Sealed, read | Sealed, after the writes | Rate of the read (sealed) |
+|---|---|---|---|---|
+| 4 | 104 MB | 111 MB | 95 MB | 253 MB/s (175) |
+| 8 | 157 MB | 161 MB | 138 MB | 237 MB/s (170) |
+| 16 | 260 MB | 268 MB | 227 MB | 193 MB/s (183) |
+
+* The peak grows with the number of threads by about 13 MB for each (a block of 8 MiB and its buffer): 4 to 8 threads add 53 MB, 8 to 16 add 103 MB. On the laptop above, 4 and 8 threads gave 128 and 162 MB with 16 clients.
+* On 2 cores and a disk the rate of the read does **not** grow with the threads (it falls a little): the cores and the disk are busy, and more threads only hold more blocks. For such a machine 4 is enough.
+* The rates of the writes are scattered (80 to 98 MB/s plain), and one run (4 threads, sealed) wrote at 9.8 MB/s against about 70 to 90 in the others; this is taken for the disk, not for the limit, and nothing is concluded from the writes.
+* One run of each, two cores: the rates are not comparable with the table at the top, only the memory is.
+
