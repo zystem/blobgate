@@ -25,3 +25,5 @@ for CiNim (D-60), and nothing is read from the old layout.
 **0.6.1** lowers the default of `BLOBGATE_THREADS` from 8 to 4 (at most four blocks held in memory at once by reads and sealed writes; more reads wait for a place). Set `BLOBGATE_THREADS=8` to keep the old value.
 
 **0.7.0** adds CopyObject to the S3 door and changes nothing that is stored or set: there is nothing to do by hand.
+
+**0.8.0** adds the status page (`/status`, `/status.json` open and `/v1/admin/status` with the admin token) on the main port, and `BLOBGATE_PROBE_SECONDS` (10): every node of every store is asked every 10 seconds whether it answers, which is one listing of its root a node every 10 seconds. The open view tells the state of each node (by its optional `label`, or `backend-position`) and of each store, and nothing else; see [status-page.md](status-page.md) and the threat model before you open the main port to a network that you do not trust. Set `BLOBGATE_PROBE_SECONDS=0` to stop the probes (every node then shows `unknown`). Nothing stored or set has to change.
