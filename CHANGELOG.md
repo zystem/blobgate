@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Added
+* **UploadPartCopy** in the S3 door (a part of an upload that is a range of an object): `aws s3 cp` and `mv` between keys now work for objects above the CLI's multipart threshold with no setting. The conditions on the source of a copy (`x-amz-copy-source-if-match`, `-if-none-match`, `-if-modified-since`, `-if-unmodified-since`) are checked in CopyObject and UploadPartCopy (they were `501`).
+
 ## [0.8.0] - 2026-11-18
 
 ### Added

@@ -541,7 +541,11 @@ func (s *Server) s3Object(w http.ResponseWriter, r *http.Request, call *auth.S3C
 		}
 	case http.MethodPut:
 		if r.Header.Get("X-Amz-Copy-Source") != "" {
-			s.s3Copy(w, r, tenant, bucket, key)
+			if upload != "" || part != "" {
+				s.s3CopyPart(w, r, tenant, bucket, key, upload, part)
+			} else {
+				s.s3Copy(w, r, tenant, bucket, key)
+			}
 			return
 		}
 		if upload != "" || part != "" {
@@ -648,17 +652,26 @@ func (s *Server) s3Part(w http.ResponseWriter, r *http.Request, cw *s3w, call *a
 		s3Fail(w, r, 400, "XAmzContentSHA256Mismatch", "the part is not the one x-amz-content-sha256 names")
 		return
 	}
+	etag, ok := s.putPartBytes(r, cw, tenant, bucket, key, upload, part, data, hex.EncodeToString(sum[:]))
+	if !ok {
+		return
+	}
+	w.Header().Set("ETag", `"`+etag+`"`)
+	w.WriteHeader(200)
+}
+
+// putPartBytes gives a part (held whole, at most one block) to the core and returns the ETag the core names it by; false when it answered with an error.
+func (s *Server) putPartBytes(r *http.Request, cw *s3w, tenant, bucket, key, upload, part string, data []byte, digest string) (string, bool) {
 	req := s.internal(r, http.MethodPut, "/v1/stores/"+bucket+"/objects/"+key, url.Values{"upload": {upload}, "part": {part}}, bytes.NewReader(data), int64(len(data)), nil)
-	req.Header.Set("X-Content-SHA256", hex.EncodeToString(sum[:]))
+	req.Header.Set("X-Content-SHA256", digest)
 	s.object(cw, req, tenant, bucket, key)
 	if cw.failed() {
 		cw.sendError(r, nil)
-		return
+		return "", false
 	}
 	var got struct {
 		ETag string `json:"etag"`
 	}
 	_ = json.Unmarshal(cw.buf.Bytes(), &got)
-	w.Header().Set("ETag", `"`+got.ETag+`"`)
-	w.WriteHeader(200)
+	return got.ETag, true
 }

@@ -2,9 +2,12 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -45,24 +48,11 @@ func (p *pipeResp) Write(b []byte) (int, error) {
 // s3Copy is CopyObject (`PUT` with `x-amz-copy-source`). When the source and the destination are in one store and the source is a set of blocks (deduplication), nothing is read and nothing is written
 // to a node: the destination takes a reference on the set, in one transaction (the same as `?link`, by the name of the set and not by a digest, so that an object made by a multipart upload is copied too).
 // Any other copy reads the source and writes the destination, through a pipe, so that no more than a block is held. The metadata is kept (`x-amz-metadata-directive: COPY`, the default) or replaced by
-// that of the request (`REPLACE`). Conditions on the source (`x-amz-copy-source-if-*`) and versions are not answered.
+// that of the request (`REPLACE`). The conditions on the source (`x-amz-copy-source-if-*`) are checked; versions are not answered.
 func (s *Server) s3Copy(w http.ResponseWriter, r *http.Request, tenant, bucket, key string) {
 	ctx := r.Context()
-	raw, query, _ := strings.Cut(r.Header.Get("X-Amz-Copy-Source"), "?")
-	if query != "" {
-		s3Fail(w, r, 501, "NotImplemented", "a version of the source (versionId) is not supported: a store keeps no versions")
-		return
-	}
-	for name := range r.Header {
-		if strings.HasPrefix(strings.ToLower(name), "x-amz-copy-source-if-") {
-			s3Fail(w, r, 501, "NotImplemented", name+" is not supported")
-			return
-		}
-	}
-	p, err := url.PathUnescape(raw)
-	sb, sk, ok := strings.Cut(strings.TrimPrefix(p, "/"), "/")
-	if err != nil || !ok || sb == "" || sk == "" || layout.Valid(sk) != "" {
-		s3Fail(w, r, 400, "InvalidArgument", "x-amz-copy-source is /bucket/key (the key is URL-encoded)")
+	sb, sk, ok := parseCopySource(w, r)
+	if !ok {
 		return
 	}
 	directive := strings.ToUpper(r.Header.Get("X-Amz-Metadata-Directive"))
@@ -98,6 +88,9 @@ func (s *Server) s3Copy(w http.ResponseWriter, r *http.Request, tenant, bucket, 
 	}
 	if o == nil {
 		s3Fail(w, r, 404, "NoSuchKey", "the source of the copy is not there")
+		return
+	}
+	if !copyConditions(w, r, o) {
 		return
 	}
 	// the metadata of the destination
@@ -223,4 +216,119 @@ func (s *Server) copyByBytes(w http.ResponseWriter, r *http.Request, cw *s3w, o 
 		return false
 	}
 	return true
+}
+
+// parseCopySource reads `x-amz-copy-source` (`/bucket/key` or `bucket/key`, the key URL-encoded). False when it answered with an error: a version of the source is not supported.
+func parseCopySource(w http.ResponseWriter, r *http.Request) (bucket, key string, ok bool) {
+	raw, query, _ := strings.Cut(r.Header.Get("X-Amz-Copy-Source"), "?")
+	if query != "" {
+		s3Fail(w, r, 501, "NotImplemented", "a version of the source (versionId) is not supported: a store keeps no versions")
+		return "", "", false
+	}
+	p, err := url.PathUnescape(raw)
+	b, k, found := strings.Cut(strings.TrimPrefix(p, "/"), "/")
+	if err != nil || !found || b == "" || k == "" || layout.Valid(k) != "" {
+		s3Fail(w, r, 400, "InvalidArgument", "x-amz-copy-source is /bucket/key (the key is URL-encoded)")
+		return "", "", false
+	}
+	return b, k, true
+}
+
+// copyConditions checks `x-amz-copy-source-if-match`, `-if-none-match`, `-if-modified-since` and `-if-unmodified-since` against the source; 412 when one does not hold (a tool that copies in parts sends if-match).
+func copyConditions(w http.ResponseWriter, r *http.Request, o *objectRow) bool {
+	h := r.Header
+	failed := ""
+	switch {
+	case h.Get("X-Amz-Copy-Source-If-Match") != "" && !etagMatches(h.Get("X-Amz-Copy-Source-If-Match"), o.etag()) && h.Get("X-Amz-Copy-Source-If-Match") != "*":
+		failed = "if-match"
+	case h.Get("X-Amz-Copy-Source-If-None-Match") != "" && (h.Get("X-Amz-Copy-Source-If-None-Match") == "*" || etagMatches(h.Get("X-Amz-Copy-Source-If-None-Match"), o.etag())):
+		failed = "if-none-match"
+	}
+	if t, err := http.ParseTime(h.Get("X-Amz-Copy-Source-If-Unmodified-Since")); err == nil && time.Unix(o.written, 0).After(t) {
+		failed = "if-unmodified-since"
+	}
+	if t, err := http.ParseTime(h.Get("X-Amz-Copy-Source-If-Modified-Since")); err == nil && !time.Unix(o.written, 0).After(t) {
+		failed = "if-modified-since"
+	}
+	if failed != "" {
+		s3Fail(w, r, 412, "PreconditionFailed", "the source does not meet x-amz-copy-source-"+failed)
+		return false
+	}
+	return true
+}
+
+// s3CopyPart is UploadPartCopy: a part of an upload that is a range of an object (`x-amz-copy-source-range: bytes=a-b`, or the whole object). The part is held whole, as any part is, so it is at most
+// 8 MiB, and every part but the last is as long as the first.
+func (s *Server) s3CopyPart(w http.ResponseWriter, r *http.Request, tenant, bucket, key, upload, part string) {
+	ctx := r.Context()
+	if upload == "" || part == "" {
+		s3Fail(w, r, 400, "InvalidArgument", "a part is PUT with partNumber and uploadId")
+		return
+	}
+	sb, sk, ok := parseCopySource(w, r)
+	if !ok {
+		return
+	}
+	cw := &s3w{w: w, h: http.Header{}}
+	if s.loadStore(cw, ctx, sb) == nil {
+		cw.sendError(r, nil)
+		return
+	}
+	o, err := s.getRow(ctx, sb, tenant+"/"+sk)
+	if err != nil {
+		s3Fail(w, r, 500, "InternalError", err.Error())
+		return
+	}
+	if o == nil {
+		s3Fail(w, r, 404, "NoSuchKey", "the source of the copy is not there")
+		return
+	}
+	if !copyConditions(w, r, o) {
+		return
+	}
+	a, b := int64(0), o.size-1
+	if rg := r.Header.Get("X-Amz-Copy-Source-Range"); rg != "" {
+		lo, hi, ok := parseRange(rg)
+		if !ok || lo < 0 || hi < 0 {
+			s3Fail(w, r, 400, "InvalidArgument", "x-amz-copy-source-range is bytes=first-last")
+			return
+		}
+		if hi >= o.size {
+			s3Fail(w, r, 416, "InvalidRange", "the range is beyond the end of the source")
+			return
+		}
+		a, b = lo, hi
+	}
+	n := b - a + 1
+	if n > BlockSize {
+		s3Fail(w, r, 400, "EntityTooLarge", fmt.Sprintf("a part is at most %d bytes (8 MiB): copy the source in ranges of 8 MiB or less (docs/s3-reference.md)", BlockSize))
+		return
+	}
+	var data []byte
+	if n > 0 {
+		get := s.internal(r, http.MethodGet, "/v1/stores/"+sb+"/objects/"+sk, nil, http.NoBody, 0, nil)
+		get.Header = http.Header{"Range": {fmt.Sprintf("bytes=%d-%d", a, b)}}
+		sw := &s3w{w: w, h: http.Header{}}
+		s.object(sw, get, tenant, sb, sk)
+		if sw.failed() {
+			sw.sendError(r, nil)
+			return
+		}
+		data = sw.buf.Bytes()
+		if int64(len(data)) != n {
+			s3Fail(w, r, 500, "InternalError", "the source gave a different number of bytes than its range")
+			return
+		}
+	}
+	sum := sha256.Sum256(data)
+	etag, ok := s.putPartBytes(r, cw, tenant, bucket, key, upload, part, data, hex.EncodeToString(sum[:]))
+	if !ok {
+		return
+	}
+	s3Reply(w, 200, struct {
+		XMLName      xml.Name `xml:"CopyPartResult"`
+		NS           string   `xml:"xmlns,attr"`
+		ETag         string
+		LastModified string
+	}{NS: s3NS, ETag: `"` + etag + `"`, LastModified: time.Unix(o.written, 0).UTC().Format("2006-01-02T15:04:05.000Z")})
 }
