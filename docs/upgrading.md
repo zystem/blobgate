@@ -27,3 +27,6 @@ for CiNim (D-60), and nothing is read from the old layout.
 **0.7.0** adds CopyObject to the S3 door and changes nothing that is stored or set: there is nothing to do by hand.
 
 **0.8.0** adds the status page (`/status`, `/status.json` open and `/v1/admin/status` with the admin token) on the main port, and `BLOBGATE_PROBE_SECONDS` (10): every node of every store is asked every 10 seconds whether it answers, which is one listing of its root a node every 10 seconds. The open view tells the state of each node (by its optional `label`, or `backend-position`) and of each store, and nothing else; see [status-page.md](status-page.md) and the threat model before you open the main port to a network that you do not trust. Set `BLOBGATE_PROBE_SECONDS=0` to stop the probes (every node then shows `unknown`). Nothing stored or set has to change.
+
+**0.9.0** adds UploadPartCopy to the S3 door and checks the `x-amz-copy-source-if-*` conditions of a copy (they were `501`): `aws s3 cp` and `mv` between keys work for objects above the CLI's multipart threshold with no setting. Nothing stored or set has to change.
+
