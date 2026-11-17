@@ -33,7 +33,7 @@ Signature Version 4, in the header or in the query (a presigned address, up to 7
 | GetObject, HeadObject | yes: `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`; streamed |
 | DeleteObject, DeleteObjects | yes (up to 1000 keys). With a trash (`soft_delete_seconds`) the object goes to the trash |
 | CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts | yes, with the limit below |
-| CopyObject | `501 NotImplemented`: read and write, or use `?link` of the core's API for bytes the store keeps |
+| CopyObject | yes: `x-amz-copy-source` (`/bucket/key`, URL-encoded; a store of the same tenant), `x-amz-metadata-directive` `COPY` (default) or `REPLACE`. In one store whose object is a set of blocks (`dedup` on) it takes a reference on the set: no byte is read or written, whatever the size. Any other copy (another store, or a store with no `dedup`) reads the source and writes the destination, a block at a time. A copy onto itself is `400 InvalidRequest` unless it replaces the metadata. `x-amz-copy-source-if-*` and `?versionId` in the source are `501`; a copy of more than one object per call, and `UploadPartCopy`, are not answered: **the AWS CLI copies an object above its `multipart_threshold` (8 MB by default) with `UploadPartCopy`, so for `aws s3 cp` and `mv` between keys set `aws configure set default.s3.multipart_threshold 5GB`** |
 | ListMultipartUploads | `501 NotImplemented` |
 | CreateBucket, DeleteBucket | `409 BucketAlreadyOwnedByYou` for a store, `403 AccessDenied` otherwise: the operator makes and removes stores |
 | acl, tagging, versioning, lifecycle, policy, cors, retention, select, ... | `501 NotImplemented` (a call with such a subresource is refused, never taken for a plain read or write) |
