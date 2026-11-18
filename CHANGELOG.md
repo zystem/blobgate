@@ -6,6 +6,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 ## [Unreleased]
 
 ### Changed
+* **The ETag of an object made of parts is the one S3 makes**: the MD5 of the MD5s of its parts and `-<number of parts>`. The module now keeps the MD5 of every part (a column `md5` of the table of parts, added at start) and makes the ETag when the upload is completed. A tool that compares the ETag of a multipart object with its own calculation (the AWS CLI, `rclone`, a backup tool) now finds them equal. Objects that are written already keep the older name, and an upload that was going on at the upgrade is completed with it (its parts have no MD5); the ETag of an object does not change after it is written. See docs/s3-reference.md.
+
+### Changed
 * The status page: on a narrow screen (a phone) a node of the details is a small card of labels and values, so that nothing has to be scrolled sideways; the two columns of the public view line up between the stores; the details table is wider on a big screen (checked in the light and the dark theme).
 
 ## [0.10.0] - 2026-11-18

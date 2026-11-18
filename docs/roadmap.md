@@ -19,7 +19,6 @@ What the project intends to do and not do in the next year. It is a plan of two 
 
 - Deduplication below the object (the same block in different objects, blocks cut by content): the whole-object kind (0.5.0) and the check before the write (`?link`, 0.6.0) are built, and the owner has said that
   below the object is not wanted.
-- In the S3 door: an ETag that is the MD5 of a multipart object too.
 - Packing small blocks into larger files for nodes that are slow with many small files (FTP).
 - A bundled node (Garage) in the chart.
 

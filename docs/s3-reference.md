@@ -44,8 +44,11 @@ words that say what to set; parts of different sizes are `400 InvalidRequest` wh
 
 ## What differs from S3
 
-* **ETag**: the MD5 of the bytes (in quotes) for an object written in one call, as S3 has it, so that the tools that check it (`s3cmd put`) are content. An object of a multipart upload, or one written by an earlier release, has a name
-  with a dash (`"<32 hex>-<number of blocks>"`), as a multipart object of S3 has, which the tools do not compare with the bytes. It is the same through the core's API.
+* **ETag**: the MD5 of the bytes (in quotes) for an object written in one call, as S3 has it, so that the tools that check it (`s3cmd put`) are content. For an object made of parts it is what S3 makes it: the MD5 of the MD5s
+  of the parts one after another, a dash and the number of parts (`"<32 hex>-<number of parts>"`), the same as S3 gives for the same parts (checked with the AWS CLI, boto3 and the SDKs of the scripts in `tools/sdk-check/`).
+  An object of an upload that began before 0.11.0, or whose parts came through the shim port with no MD5 kept, has the older name `"<32 hex>-<number of blocks>"` (not the MD5 of anything the tools can compare), and an object
+  of a store with `dedup` whose bytes were written in one call too has the MD5 of the bytes. The ETag of a part (the answer of UploadPart) is the module's own name (`<sha256>-<size>`), not the MD5 of the part: send it back as it is.
+  It is the same through the core's API, in a listing and after a copy.
 * **Same bytes**: with `dedup` the objects of the same bytes share their blocks ([deduplication.md](deduplication.md)); nothing in the answers shows it.
 * **Time of creation of a bucket** is 1970: a store has none that is kept.
 * **Errors** are the words of S3 (`NoSuchKey`, `NoSuchBucket`, `NoSuchUpload`, `PreconditionFailed`, `InvalidRange`, `BadDigest`, `XAmzContentSHA256Mismatch`, `SignatureDoesNotMatch`, `InvalidAccessKeyId`, `RequestTimeTooSkewed`,

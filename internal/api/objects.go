@@ -457,6 +457,10 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 		pj = []byte("{}")
 	}
 	dedup := m.Dedup != "" && size > 0 && len(blocks) > 0 && len(plain) == len(blocks)
+	setMD5 := md5sum // the MD5 of the whole bytes only: the set is shared by objects whose ETag is that (a `?link` takes it); the name of an upload in parts (`hex-N`) is the object's own
+	if strings.Contains(setMD5, "-") {
+		setMD5 = ""
+	}
 	cid := ""
 	s.at("commit:before")
 	stmts := []rq.Stmt{s.releaseSet(m.Name, full, false)}
@@ -467,7 +471,7 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 		plj, _ := json.Marshal(plain)
 		stmts = append(stmts, rq.S("INSERT INTO storage_sets (store, cid, owner, generation, size, block_size, blocks, plain, enc, refs, zero_since, created_at, scope, digest, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?) "+
 			"ON CONFLICT(store, cid) DO UPDATE SET refs = refs + 1, zero_since = 0, scope = excluded.scope, digest = CASE WHEN digest = '' THEN excluded.digest ELSE digest END, md5 = CASE WHEN md5 = '' THEN excluded.md5 ELSE md5 END",
-			m.Name, cid, full, gen, size, blockSize, string(bj), string(plj), enc, s.now(), scopeOf(m, full), digest, md5sum))
+			m.Name, cid, full, gen, size, blockSize, string(bj), string(plj), enc, s.now(), scopeOf(m, full), digest, setMD5))
 		for _, n := range m.Nodes {
 			stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
 				"SELECT store, ?, ?, 'purge', ?, 0, 0, '' FROM storage_sets WHERE store = ? AND cid = ? AND NOT (owner = ? AND generation = ?) "+
@@ -760,16 +764,17 @@ func (s *Server) putPart(w http.ResponseWriter, r *http.Request, m *store.Mirror
 		problem(w, 404, "no_such_upload", "no such upload (it was completed, aborted or swept)")
 		return
 	}
-	wr, herr := s.putBlock(ctx, m, full, upload, n-1, size, given, r.Body)
+	sum5 := md5.New() // #nosec G401 -- see the import: the part of the ETag of a multipart object
+	wr, herr := s.putBlock(ctx, m, full, upload, n-1, size, given, io.TeeReader(r.Body, sum5))
 	if herr != nil {
 		herr.write(w)
 		return
 	}
 	s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", wr.failed)
 	s.at("part:after-block")
-	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at, stored_sha256, stored_size, enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
-		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at, stored_sha256 = excluded.stored_sha256, stored_size = excluded.stored_size, enc = excluded.enc",
-		m.Name, full, upload, n, wr.plain, size, s.now(), wr.stored, wr.storedSize, wr.enc)); err != nil {
+	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at, stored_sha256, stored_size, enc, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at, stored_sha256 = excluded.stored_sha256, stored_size = excluded.stored_size, enc = excluded.enc, md5 = excluded.md5",
+		m.Name, full, upload, n, wr.plain, size, s.now(), wr.stored, wr.storedSize, wr.enc, hex.EncodeToString(sum5.Sum(nil)))); err != nil {
 		fail(w, err)
 		return
 	}
@@ -797,16 +802,17 @@ type partRow struct {
 	stored     string // of the block as stored
 	storedSize int64
 	enc        uint32
+	md5        string // of the part, hex; "" when the part was written before the module kept it
 }
 
 func (s *Server) partsOf(ctx context.Context, st, full, upload string) ([]partRow, error) {
-	rows, err := s.DB.Query(ctx, rq.S("SELECT part, sha256, size, stored_sha256, stored_size, enc FROM storage_parts WHERE store = ? AND key = ? AND upload = ? ORDER BY part", st, full, upload))
+	rows, err := s.DB.Query(ctx, rq.S("SELECT part, sha256, size, stored_sha256, stored_size, enc, md5 FROM storage_parts WHERE store = ? AND key = ? AND upload = ? ORDER BY part", st, full, upload))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]partRow, 0, len(rows))
 	for _, r := range rows {
-		p := partRow{int(rq.Int(r[0])), rq.Str(r[1]), rq.Int(r[2]), rq.Str(r[3]), rq.Int(r[4]), keyID(rq.Int(r[5]))}
+		p := partRow{int(rq.Int(r[0])), rq.Str(r[1]), rq.Int(r[2]), rq.Str(r[3]), rq.Int(r[4]), keyID(rq.Int(r[5])), rq.Str(r[6])}
 		if p.stored == "" { // a row written before the blocks could be sealed
 			p.stored, p.storedSize = p.sha, p.size
 		}
@@ -873,6 +879,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 	blocks, plain := make([]string, len(given)), make([]string, len(given))
 	var enc uint32
 	var total, blockSize int64
+	partsMD5 := []byte{} // the MD5s of the parts one after another: the ETag of S3 for an upload in parts is the MD5 of this and the number of parts
 	for i, g := range given {
 		if g.n != i+1 {
 			problem(w, 400, "invalid_request", fmt.Sprintf("the parts are 1..%d with no gap or repeat", len(given)))
@@ -902,6 +909,11 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		}
 		blocks[i], plain[i] = p.stored, p.sha
 		total += p.size
+		if raw, err := hex.DecodeString(p.md5); err == nil && len(raw) == md5.Size && partsMD5 != nil {
+			partsMD5 = append(partsMD5, raw...)
+		} else {
+			partsMD5 = nil // a part with no MD5 (written before the module kept it): the ETag stays the old kind
+		}
 	}
 	if e := s.checkQuota(ctx, m, full, total); e != nil {
 		e.write(w)
@@ -913,7 +925,12 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		om.ContentType = rq.Str(rows[0][0])
 		_ = json.Unmarshal([]byte(rq.Str(rows[0][1])), &om.Pairs)
 	}
-	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, "", "", enc, om); err != nil {
+	etagMD5 := ""
+	if partsMD5 != nil {
+		sum := md5.Sum(partsMD5) // #nosec G401 -- see the import
+		etagMD5 = hex.EncodeToString(sum[:]) + "-" + strconv.Itoa(len(given))
+	}
+	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, "", etagMD5, enc, om); err != nil {
 		fail(w, err)
 		return
 	}
