@@ -1,7 +1,7 @@
 :root{--bg:#fff;--fg:#1f2328;--muted:#59636e;--line:#d1d9e0;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--unk:#59636e;--card:#f6f8fa}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9198a1;--line:#3d444d;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--unk:#9198a1;--card:#151b23}}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
-main{max-width:56rem;margin:0 auto;padding:1rem 16px 3rem}
+main{max-width:72rem;margin:0 auto;padding:1rem 16px 3rem}
 h1{font-size:1.4rem;margin:.5rem 0 1rem}
 h2{font-size:1.05rem;margin:0}
 .overall{font-size:1.1rem;font-weight:600;padding:.6rem .9rem;border-radius:8px;border:1px solid var(--line);background:var(--card)}
@@ -12,7 +12,7 @@ table{border-collapse:collapse;width:100%}
 th,td{text-align:left;padding:.4rem .9rem;border-bottom:1px solid var(--line);white-space:nowrap;font-size:.92rem}
 tr:last-child td{border-bottom:0}
 th{color:var(--muted);font-weight:500}
-td.err{min-width:18rem;white-space:normal;word-break:break-word;color:var(--muted)}
+td.err{min-width:14rem;white-space:normal;word-break:break-word;color:var(--muted)}
 .pill{display:inline-block;padding:.05rem .55rem;border-radius:999px;font-size:.8rem;font-weight:700;border:1px solid currentColor}
 .ok,.green{color:var(--ok)}
 .lagging,.slow,.full,.yellow{color:var(--warn)}
@@ -26,3 +26,20 @@ form{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:1.5rem}
 label{flex-basis:100%;font-size:.88rem;color:var(--muted)}
 input{flex:1 1 14rem;padding:.4rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
 button{padding:.4rem .8rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg);cursor:pointer}
+table.pub th:first-child,table.pub td:first-child{width:60%}
+/* a narrow screen: a row of the details is a small card of label and value, so that nothing has to be scrolled sideways */
+@media (max-width:72rem){
+  table.detail,table.detail tbody{display:block}
+  table.detail tr.head{display:none}
+  table.detail tr{display:block;border-bottom:1px solid var(--line);padding:.4rem 0}
+  table.detail tr:last-child{border-bottom:0}
+  table.detail td{display:flex;justify-content:space-between;gap:1rem;border-bottom:0;padding:.15rem .9rem;white-space:normal;word-break:break-word}
+  table.detail td::before{content:attr(data-label);color:var(--muted);flex:none}
+  table.detail td.name{font-weight:600}
+  table.detail td.name::before{content:none}
+  table.detail td.err{display:block;min-width:0}
+  table.detail td.err::before{display:block}
+  table.detail td.err:empty{display:none}
+  table.detail td:empty{display:none}
+}
+table.pub{max-width:50rem}

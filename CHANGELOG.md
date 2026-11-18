@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Changed
+* The status page: on a narrow screen (a phone) a node of the details is a small card of labels and values, so that nothing has to be scrolled sideways; the two columns of the public view line up between the stores; the details table is wider on a big screen (checked in the light and the dark theme).
+
 ## [0.10.0] - 2026-11-18
 
 ### Added
