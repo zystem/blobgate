@@ -1,0 +1,11 @@
+# Checks of the S3 door with the SDKs of other languages
+
+Each script makes the calls a program makes with its SDK (objects with metadata, parts, copies, lists with pages and a delimiter, presigned addresses, deletes) against a running module and prints PASS or FAIL for every step.
+They are not part of `go test`: they need the SDKs. The keys are `blobgate s3-key <tenant> <secret>`; the bucket is a store (use one with `"dedup": "tenant"` to see the copies cost nothing). What was run, with which versions: [../../docs/s3.md](../../docs/s3.md).
+
+```bash
+python3 tools/sdk-check/boto3_check.py http://127.0.0.1:18092 001 <secret key> main                 # boto3
+node tools/sdk-check/js_check.mjs http://127.0.0.1:18092 001 <secret key> main                      # AWS SDK for JavaScript v3 (npm i @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-request-presigner)
+cd tools/sdk-check/java && mvn -q compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java \
+  -Dexec.mainClass=check.JavaCheck -Dexec.args="http://127.0.0.1:18092 001 <secret key> main"        # AWS SDK for Java v2
+```

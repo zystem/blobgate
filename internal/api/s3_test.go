@@ -592,3 +592,33 @@ func TestS3UploadPartCopy(t *testing.T) {
 		}
 	}
 }
+
+// The names of the metadata go out in lower case, as S3 sends them (a client that reads them as they come, boto3, gives back what was written).
+func TestS3MetadataNamesAreLowerCaseOnTheWire(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := &s3w{w: rec, h: http.Header{}, stream: true}
+	cw.Header().Set("X-Blobgate-Meta-Owner", "me")
+	cw.Header().Set("ETag", `"x"`)
+	cw.WriteHeader(200)
+	if v := rec.Header()["x-amz-meta-owner"]; len(v) != 1 || v[0] != "me" {
+		t.Fatalf("the metadata went out as %v", rec.Header())
+	}
+	if _, ok := rec.Header()["X-Amz-Meta-Owner"]; ok {
+		t.Fatal("the name with capitals went out too")
+	}
+}
+
+// A listing of nothing says KeyCount 0 (v2), as S3 does: the Java SDK reads a missing one as null and fails; a v1 listing has no KeyCount.
+func TestS3EmptyListingSaysKeyCountZero(t *testing.T) {
+	r := newRig(t, nil)
+	r.dedupStore("", 0, "")
+	cl := r.s3Client("001", secret1)
+	lo, err := cl.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String("main")})
+	if err != nil || lo.KeyCount == nil || *lo.KeyCount != 0 {
+		t.Fatalf("an empty listing: %v %+v", err, lo)
+	}
+	l1, err := cl.ListObjects(context.Background(), &s3.ListObjectsInput{Bucket: aws.String("main")})
+	if err != nil || len(l1.Contents) != 0 {
+		t.Fatalf("v1: %v %+v", err, l1)
+	}
+}
