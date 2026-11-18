@@ -9,3 +9,7 @@ node tools/sdk-check/js_check.mjs http://127.0.0.1:18092 001 <secret key> main  
 cd tools/sdk-check/java && mvn -q compile org.codehaus.mojo:exec-maven-plugin:3.5.0:java \
   -Dexec.mainClass=check.JavaCheck -Dexec.args="http://127.0.0.1:18092 001 <secret key> main"        # AWS SDK for Java v2
 ```
+
+Over TLS (`BLOBGATE_TLS_CERT_FILE` on the module, an `https://` endpoint): make each SDK trust the certificate. Python: `AWS_CA_BUNDLE=cert.pem SSL_CERT_FILE=cert.pem` (the second is for the presigned addresses, which the script fetches itself).
+Node: `NODE_EXTRA_CA_CERTS=cert.pem`. Java: `MAVEN_OPTS="-Djavax.net.ssl.trustStore=trust.jks -Djavax.net.ssl.trustStorePassword=changeit"` (made with `keytool -importcert -file cert.pem -keystore trust.jks`).
+
