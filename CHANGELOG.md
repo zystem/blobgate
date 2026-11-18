@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Fixed
+* S3 door: **the names of the metadata go out in lower case** (`x-amz-meta-owner`), as S3 sends them: boto3 gave back `Owner` for what was written as `owner`. **A listing of nothing has `KeyCount` 0** (v2): the Java SDK read the missing one as null and failed. Found with the SDKs of Python, JavaScript and Java (`tools/sdk-check/`, docs/s3.md).
+
 ### Changed
 * Tests only: the S3 door, deduplication, copies by reference and by ranges, and the status page are tested with real servers (SFTPGo's WebDAV, FTP and SFTP, Garage, SeaweedFS, and MinIO where its image is there), in CI with `BLOBGATE_DOCKER_TESTS=1`. No fault was found in the program.
 

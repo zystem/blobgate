@@ -17,7 +17,7 @@ A tenant sees its own keys only, through either door.
 
 ## Signatures
 
-Signature Version 4, in the header or in the query (a presigned address, up to 7 days). The payload may be signed (`x-amz-content-sha256` is its digest, which is checked as the body is written), `UNSIGNED-PAYLOAD`, or streamed
+Signature Version 4 only (**boto3** makes a presigned address with Signature Version 2 unless the client is made with `Config(signature_version="s3v4")`), in the header or in the query (a presigned address, up to 7 days). The payload may be signed (`x-amz-content-sha256` is its digest, which is checked as the body is written), `UNSIGNED-PAYLOAD`, or streamed
 (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, with or without `-TRAILER`, and `STREAMING-UNSIGNED-PAYLOAD-TRAILER`): every chunk of a signed stream is checked before its bytes are used. A checksum that comes in a trailer
 (`x-amz-checksum-*`) is read and **not checked**: the module checks the digests it makes itself. The time of the request must be within 15 minutes of the time of the module.
 

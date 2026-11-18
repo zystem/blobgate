@@ -133,7 +133,7 @@ func (x *s3w) WriteHeader(c int) {
 		out := x.w.Header()
 		for k, v := range x.h {
 			if rest, ok := strings.CutPrefix(k, "X-Blobgate-Meta-"); ok {
-				out["X-Amz-Meta-"+rest] = v
+				out["x-amz-meta-"+strings.ToLower(rest)] = v // lower case on the wire, as S3 sends it: a client that reads the names as they come (boto3) gets the names that were written
 			} else {
 				out[k] = v
 			}
@@ -414,7 +414,7 @@ func (s *Server) s3List(w http.ResponseWriter, r *http.Request, m *store.Mirror,
 		Prefix                string
 		Delimiter             string `xml:",omitempty"`
 		EncodingType          string `xml:",omitempty"`
-		KeyCount              int    `xml:",omitempty"`
+		KeyCount              *int   `xml:",omitempty"` // v2 only; a pointer so that 0 is written (the Java SDK reads a missing KeyCount as null and fails)
 		MaxKeys               int
 		IsTruncated           bool
 		Marker                string `xml:",omitempty"`
@@ -435,7 +435,8 @@ func (s *Server) s3List(w http.ResponseWriter, r *http.Request, m *store.Mirror,
 		out.CommonPrefixes = append(out.CommonPrefixes, cp{enc(p)})
 	}
 	if v2 {
-		out.KeyCount = len(out.Contents) + len(out.CommonPrefixes)
+		n := len(out.Contents) + len(out.CommonPrefixes)
+		out.KeyCount = &n
 		out.ContinuationToken, out.StartAfter = q.Get("continuation-token"), enc(q.Get("start-after"))
 		out.NextContinuationToken = got.Next
 	} else {
