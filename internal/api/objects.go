@@ -589,7 +589,7 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 	if om.Pairs == nil {
 		pj = []byte("{}")
 	}
-	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_uploads (store, key, upload, created_at, content_type, meta) VALUES (?, ?, ?, ?, ?, ?)", m.Name, full, gen, s.now(), om.ContentType, string(pj))); err != nil {
+	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_uploads (store, key, upload, created_at, content_type, meta, one_call) VALUES (?, ?, ?, ?, ?, ?, 1)", m.Name, full, gen, s.now(), om.ContentType, string(pj))); err != nil {
 		fail(w, err)
 		return
 	}

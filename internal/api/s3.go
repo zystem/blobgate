@@ -341,7 +341,7 @@ func (s *Server) s3Bucket(w http.ResponseWriter, r *http.Request, call *auth.S3C
 			V       string   `xml:",chardata"`
 		}{NS: s3NS})
 	case r.Method == http.MethodGet && q.Has("uploads"):
-		s3Fail(w, r, 501, "NotImplemented", "the list of uploads that are going on is not kept")
+		s.s3ListUploads(w, r, m, tenant, bucket, q)
 	case r.Method == http.MethodGet:
 		s.s3List(w, r, m, tenant, bucket, q)
 	case r.Method == http.MethodPost && q.Has("delete"):

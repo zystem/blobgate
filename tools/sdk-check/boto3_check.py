@@ -117,6 +117,23 @@ def missing():
         raise AssertionError("a key that is not there was read")
 
 
+def uploads_in_progress():
+    ids = [s3.create_multipart_upload(Bucket=bucket, Key="b/u/%d" % i)["UploadId"] for i in range(3)]
+    r = s3.list_multipart_uploads(Bucket=bucket, Prefix="b/u/")
+    assert sorted(u["Key"] for u in r["Uploads"]) == ["b/u/0", "b/u/1", "b/u/2"] and not r["IsTruncated"], r
+    pages, marker = [], {}
+    while True:
+        r = s3.list_multipart_uploads(Bucket=bucket, Prefix="b/u/", MaxUploads=1, **marker)
+        pages += [u["Key"] for u in r.get("Uploads", [])]
+        if not r["IsTruncated"]:
+            break
+        marker = {"KeyMarker": r["NextKeyMarker"], "UploadIdMarker": r["NextUploadIdMarker"]}
+    assert pages == ["b/u/0", "b/u/1", "b/u/2"], pages
+    for i, up in enumerate(ids):
+        s3.abort_multipart_upload(Bucket=bucket, Key="b/u/%d" % i, UploadId=up)
+    assert not s3.list_multipart_uploads(Bucket=bucket, Prefix="b/u/").get("Uploads")
+
+
 def deletes():
     s3.delete_object(Bucket=bucket, Key="b/small")
     r = s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in ["b/big", "b/big-copy", "b/small-copy", "b/small-meta", "b/presigned-put"]]})
@@ -126,7 +143,7 @@ def deletes():
 
 for name, fn in [("put, head, get, the MD5 ETag", put_get), ("range read", ranged), ("upload_file and download_file of 20 MiB in parts", managed_upload_download),
                  ("CopyObject, metadata REPLACE, managed copy in parts", copies), ("listing, pages, delimiter", listing), ("presigned GET and PUT", presigned),
-                 ("a key that is not there", missing), ("delete, delete_objects", deletes)]:
+                 ("uploads in progress: list, pages, abort", uploads_in_progress), ("a key that is not there", missing), ("delete, delete_objects", deletes)]:
     step(name, fn)
 print("boto3", boto3.__version__, "-", "FAILED: " + ", ".join(failed) if failed else "all passed")
 sys.exit(1 if failed else 0)

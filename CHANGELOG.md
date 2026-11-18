@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Added
+* **ListMultipartUploads** in the S3 door (`aws s3api list-multipart-uploads`, `rclone backend cleanup`, the cleaning of tools that find uploads nobody finished): the uploads in parts of the tenant, by key and upload id, with `prefix`, `delimiter`, markers and `max-uploads`. The table of uploads gains a column (`one_call`, added at start) that tells a write in one call, which is not listed, from an upload in parts (during a rolling upgrade, a write in one call that an older replica makes may show in the list for the seconds it lasts).
+
 ### Fixed
 * S3 door: **the names of the metadata go out in lower case** (`x-amz-meta-owner`), as S3 sends them: boto3 gave back `Owner` for what was written as `owner`. **A listing of nothing has `KeyCount` 0** (v2): the Java SDK read the missing one as null and failed. Found with the SDKs of Python, JavaScript and Java (`tools/sdk-check/`, docs/s3.md).
 
