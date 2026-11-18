@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import {
   S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, CopyObjectCommand, ListObjectsV2Command, DeleteObjectCommand, DeleteObjectsCommand,
-  CreateMultipartUploadCommand, UploadPartCopyCommand, CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand, UploadPartCopyCommand, CompleteMultipartUploadCommand, ListMultipartUploadsCommand, AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -75,6 +75,20 @@ await step("presigned GET and PUT", async () => {
   const r = await fetch(p, { method: "PUT", body: "through a presigned address" });
   ok(r.ok, "status " + r.status);
   ok((await text(await s3.send(new GetObjectCommand({ Bucket, Key: "j/presigned-put" })))).toString() === "through a presigned address");
+});
+await step("uploads in progress: list, pages, abort", async () => {
+  const ids = [];
+  for (let i = 0; i < 3; i++) ids.push((await s3.send(new CreateMultipartUploadCommand({ Bucket, Key: `j/u/${i}` }))).UploadId);
+  let r = await s3.send(new ListMultipartUploadsCommand({ Bucket, Prefix: "j/u/" }));
+  ok(JSON.stringify((r.Uploads ?? []).map((u) => u.Key).sort()) === JSON.stringify(["j/u/0", "j/u/1", "j/u/2"]) && !r.IsTruncated, JSON.stringify(r.Uploads));
+  const keys = []; let km, im;
+  do {
+    r = await s3.send(new ListMultipartUploadsCommand({ Bucket, Prefix: "j/u/", MaxUploads: 1, KeyMarker: km, UploadIdMarker: im }));
+    keys.push(...(r.Uploads ?? []).map((u) => u.Key)); km = r.IsTruncated ? r.NextKeyMarker : undefined; im = r.IsTruncated ? r.NextUploadIdMarker : undefined;
+  } while (km);
+  ok(JSON.stringify(keys) === JSON.stringify(["j/u/0", "j/u/1", "j/u/2"]), keys.join(","));
+  for (let i = 0; i < 3; i++) await s3.send(new AbortMultipartUploadCommand({ Bucket, Key: `j/u/${i}`, UploadId: ids[i] }));
+  ok(((await s3.send(new ListMultipartUploadsCommand({ Bucket, Prefix: "j/u/" }))).Uploads ?? []).length === 0);
 });
 await step("a key that is not there", async () => {
   try { await s3.send(new HeadObjectCommand({ Bucket, Key: "j/not-there" })); ok(false, "found"); } catch (e) { ok(e.$metadata?.httpStatusCode === 404, e.name); }

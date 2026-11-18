@@ -623,3 +623,105 @@ func TestS3EmptyListingSaysKeyCountZero(t *testing.T) {
 		t.Fatalf("v1: %v %+v", err, l1)
 	}
 }
+
+// ListMultipartUploads: the uploads in parts that have begun and not ended, of the tenant only, by key and upload id, with a prefix, a delimiter, markers and a limit; a write in one call is not one of them;
+// a completed or an aborted upload goes.
+func TestS3ListMultipartUploads(t *testing.T) {
+	r := newRig(t, nil)
+	r.dedupStore("", 0, "")
+	c := r.s3Client("001", secret1)
+	other := r.s3Client("002", "the-secret-of-shard-002-go-test")
+	ctx := context.Background()
+	begin := func(cl *s3.Client, key string) string {
+		t.Helper()
+		o, err := cl.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String(key)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return aws.ToString(o.UploadId)
+	}
+	list := func(in *s3.ListMultipartUploadsInput) *s3.ListMultipartUploadsOutput {
+		t.Helper()
+		in.Bucket = aws.String("main")
+		o, err := c.ListMultipartUploads(ctx, in)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		return o
+	}
+	if o := list(&s3.ListMultipartUploadsInput{}); len(o.Uploads) != 0 || aws.ToBool(o.IsTruncated) {
+		t.Fatalf("an empty list: %+v", o)
+	}
+	a1, a2, b1 := begin(c, "dir/a"), begin(c, "dir/a"), begin(c, "dir/sub/b")
+	z := begin(c, "z")
+	_ = begin(other, "dir/other-tenant")
+	// a write in one call is not an upload; a finished object is not either
+	if _, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("main"), Key: aws.String("dir/plain"), Body: bytes.NewReader([]byte("x"))}); err != nil {
+		t.Fatal(err)
+	}
+	o := list(&s3.ListMultipartUploadsInput{})
+	if len(o.Uploads) != 4 || aws.ToString(o.Uploads[0].Key) != "dir/a" || aws.ToString(o.Uploads[2].Key) != "dir/sub/b" || aws.ToString(o.Uploads[3].Key) != "z" {
+		t.Fatalf("the uploads of the tenant: %+v", o.Uploads)
+	}
+	ids := map[string]bool{a1: true, a2: true}
+	if !ids[aws.ToString(o.Uploads[0].UploadId)] || !ids[aws.ToString(o.Uploads[1].UploadId)] || aws.ToString(o.Uploads[0].UploadId) >= aws.ToString(o.Uploads[1].UploadId) || o.Uploads[0].Initiated == nil || aws.ToString(o.Uploads[0].Initiator.ID) != "001" {
+		t.Fatalf("the two uploads of one key: %+v", o.Uploads[:2])
+	}
+	// prefix and delimiter
+	o = list(&s3.ListMultipartUploadsInput{Prefix: aws.String("dir/"), Delimiter: aws.String("/")})
+	if len(o.Uploads) != 2 || len(o.CommonPrefixes) != 1 || aws.ToString(o.CommonPrefixes[0].Prefix) != "dir/sub/" {
+		t.Fatalf("prefix and delimiter: %+v %+v", o.Uploads, o.CommonPrefixes)
+	}
+	// pages of one, by the markers
+	var seen []string
+	in := &s3.ListMultipartUploadsInput{MaxUploads: aws.Int32(1)}
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("the pages do not end")
+		}
+		o = list(in)
+		for _, u := range o.Uploads {
+			seen = append(seen, aws.ToString(u.Key)+"/"+aws.ToString(u.UploadId))
+		}
+		if !aws.ToBool(o.IsTruncated) {
+			break
+		}
+		in = &s3.ListMultipartUploadsInput{MaxUploads: aws.Int32(1), KeyMarker: o.NextKeyMarker, UploadIdMarker: o.NextUploadIdMarker}
+	}
+	if len(seen) != 4 || seen[3] != "z/"+z || seen[2] != "dir/sub/b/"+b1 {
+		t.Fatalf("by pages: %v", seen)
+	}
+	// delimiter with pages: the folded prefix comes once
+	o = list(&s3.ListMultipartUploadsInput{Delimiter: aws.String("/"), MaxUploads: aws.Int32(1)})
+	if len(o.CommonPrefixes) != 1 || aws.ToString(o.CommonPrefixes[0].Prefix) != "dir/" || !aws.ToBool(o.IsTruncated) || aws.ToString(o.NextKeyMarker) != "dir/" {
+		t.Fatalf("the first page with a delimiter: %+v", o)
+	}
+	o = list(&s3.ListMultipartUploadsInput{Delimiter: aws.String("/"), KeyMarker: aws.String("dir/")})
+	if len(o.Uploads) != 1 || aws.ToString(o.Uploads[0].Key) != "z" || len(o.CommonPrefixes) != 0 {
+		t.Fatalf("after the folded prefix: %+v", o)
+	}
+	// a completed upload and an aborted one go
+	if _, err := c.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String("z"), UploadId: aws.String(z)}); err != nil {
+		t.Fatal(err)
+	}
+	up, err := c.UploadPart(ctx, &s3.UploadPartInput{Bucket: aws.String("main"), Key: aws.String("dir/sub/b"), UploadId: aws.String(b1), PartNumber: aws.Int32(1), Body: bytes.NewReader([]byte("part"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String("dir/sub/b"), UploadId: aws.String(b1),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: []types.CompletedPart{{ETag: up.ETag, PartNumber: aws.Int32(1)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if o = list(&s3.ListMultipartUploadsInput{}); len(o.Uploads) != 2 {
+		t.Fatalf("after an abort and a completion: %+v", o.Uploads)
+	}
+	// url encoding of the keys, and the refusals
+	_ = begin(c, "dir/with space")
+	o = list(&s3.ListMultipartUploadsInput{Prefix: aws.String("dir/with"), EncodingType: types.EncodingTypeUrl})
+	if len(o.Uploads) != 1 || aws.ToString(o.Uploads[0].Key) != "dir%2Fwith+space" {
+		t.Fatalf("encoding-type url: %+v", o.Uploads)
+	}
+	if _, err := c.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{Bucket: aws.String("main"), UploadIdMarker: aws.String("x")}); err == nil || !strings.Contains(err.Error(), "InvalidArgument") {
+		t.Fatalf("an upload id marker with no key marker: %v", err)
+	}
+}

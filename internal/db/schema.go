@@ -53,6 +53,7 @@ var columns = [][3]string{
 	{"storage_objects", "cid", "TEXT NOT NULL DEFAULT ''"},          // the set of blocks it points to (deduplication); '': its own blocks, in `generation`
 	{"storage_uploads", "content_type", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_uploads", "meta", "TEXT NOT NULL DEFAULT '{}'"},
+	{"storage_uploads", "one_call", "INTEGER NOT NULL DEFAULT 0"},  // 1: the row of a write in one call, which the sweep looks at while it goes on; 0: an upload in parts (the list of uploads of S3 has those only)
 	{"storage_parts", "stored_sha256", "TEXT NOT NULL DEFAULT ''"}, // of the block as stored (sealed); sha256 stays that of what the shim sent, which the core compares
 	{"storage_parts", "stored_size", "INTEGER NOT NULL DEFAULT 0"},
 	{"storage_parts", "enc", "INTEGER NOT NULL DEFAULT 0"},

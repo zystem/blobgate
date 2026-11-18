@@ -130,6 +130,24 @@ public class JavaCheck {
             ok(new String(s3.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket).key("k/presigned-put").build()).asByteArray()).equals("through a presigned address"), "presigned put");
             return null;
         });
+        step("uploads in progress: list, pages, abort", () -> {
+            List<String> ids = new ArrayList<>();
+            for (int i = 0; i < 3; i++) ids.add(s3.createMultipartUpload(CreateMultipartUploadRequest.builder().bucket(bucket).key("k/u/" + i).build()).uploadId());
+            var r = s3.listMultipartUploads(ListMultipartUploadsRequest.builder().bucket(bucket).prefix("k/u/").build());
+            ok(r.uploads().stream().map(MultipartUpload::key).sorted().toList().equals(List.of("k/u/0", "k/u/1", "k/u/2")) && !r.isTruncated(), r.uploads().toString());
+            List<String> keys = new ArrayList<>();
+            String km = null, im = null;
+            do {
+                var p = s3.listMultipartUploads(ListMultipartUploadsRequest.builder().bucket(bucket).prefix("k/u/").maxUploads(1).keyMarker(km).uploadIdMarker(im).build());
+                p.uploads().forEach(u -> keys.add(u.key()));
+                km = p.isTruncated() ? p.nextKeyMarker() : null;
+                im = p.isTruncated() ? p.nextUploadIdMarker() : null;
+            } while (km != null);
+            ok(keys.equals(List.of("k/u/0", "k/u/1", "k/u/2")), keys.toString());
+            for (int i = 0; i < 3; i++) s3.abortMultipartUpload(AbortMultipartUploadRequest.builder().bucket(bucket).key("k/u/" + i).uploadId(ids.get(i)).build());
+            ok(s3.listMultipartUploads(ListMultipartUploadsRequest.builder().bucket(bucket).prefix("k/u/").build()).uploads().isEmpty(), "left over");
+            return null;
+        });
         step("a key that is not there", () -> {
             try {
                 s3.headObject(HeadObjectRequest.builder().bucket(bucket).key("k/not-there").build());
