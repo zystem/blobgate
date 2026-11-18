@@ -30,3 +30,5 @@ for CiNim (D-60), and nothing is read from the old layout.
 
 **0.9.0** adds UploadPartCopy to the S3 door and checks the `x-amz-copy-source-if-*` conditions of a copy (they were `501`): `aws s3 cp` and `mv` between keys work for objects above the CLI's multipart threshold with no setting. Nothing stored or set has to change.
 
+**0.10.0** adds ListMultipartUploads to the S3 door; the table of uploads gains a column (`one_call`) that the program adds at start, by itself. Two answers of the S3 door change to what S3 does: the names of the metadata go out in lower case (`x-amz-meta-owner`), and a listing of nothing says `KeyCount` 0. A client that read the names of the metadata with their capitals (it was `X-Amz-Meta-Owner`) must read them without: HTTP names are not case sensitive, and the SDKs do not look at the case. During a rolling upgrade a write in one call that an older replica makes may show in the list of uploads for the seconds it lasts.
+
