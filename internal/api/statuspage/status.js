@@ -25,7 +25,7 @@
     if (s < 7200) { return Math.round(s / 60) + ' min'; }
     return Math.round(s / 3600) + ' h';
   }
-  function cell(row, text, cls) { row.appendChild(el('td', cls || '', text)); }
+  function cell(row, text, cls, label) { var c = el('td', cls || '', text); if (label) { c.setAttribute('data-label', label); } row.appendChild(c); }
 
   function draw(data, detailed) {
     var overall = document.getElementById('overall');
@@ -40,22 +40,22 @@
       head.appendChild(pill(st.state));
       box.appendChild(head);
       var wrap = el('div', 'node-list');
-      var table = el('table');
-      var hr = el('tr');
+      var table = el('table', detailed ? 'detail' : 'pub');
+      var hr = el('tr', 'head');
       var cols = detailed ? ['Node', 'State', 'Id', 'Answer', 'Waiting copies', 'Oldest', 'Free', 'Last error'] : ['Node', 'State'];
       cols.forEach(function (c) { hr.appendChild(el('th', '', c)); });
       table.appendChild(hr);
       (st.nodes || []).forEach(function (n) {
         var r = el('tr');
-        cell(r, n.name);
-        var td = el('td'); td.appendChild(pill(n.state)); r.appendChild(td);
+        cell(r, n.name, 'name');
+        var td = el('td'); td.setAttribute('data-label', 'State'); td.appendChild(pill(n.state)); r.appendChild(td);
         if (detailed) {
-          cell(r, n.id);
-          cell(r, n.state === 'unknown' ? '' : (n.latency_ms ? n.latency_ms + ' ms' : '<1 ms'));
-          cell(r, n.pending ? String(n.pending) : '');
-          cell(r, age(n.oldest_age_seconds));
-          cell(r, n.free === null || n.free === undefined ? '' : size(n.free) + ' of ' + size(n.total));
-          cell(r, n.error || '', 'err');
+          cell(r, n.id, '', 'Id');
+          cell(r, n.state === 'unknown' ? '' : (n.latency_ms ? n.latency_ms + ' ms' : '<1 ms'), '', 'Answer');
+          cell(r, n.pending ? String(n.pending) : '', '', 'Waiting copies');
+          cell(r, age(n.oldest_age_seconds), '', 'Oldest');
+          cell(r, n.free === null || n.free === undefined ? '' : size(n.free) + ' of ' + size(n.total), '', 'Free');
+          cell(r, n.error || '', 'err', 'Last error');
         }
         table.appendChild(r);
       });
