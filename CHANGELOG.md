@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-18
+
 ### Added
 * **ListMultipartUploads** in the S3 door (`aws s3api list-multipart-uploads`, `rclone backend cleanup`, the cleaning of tools that find uploads nobody finished): the uploads in parts of the tenant, by key and upload id, with `prefix`, `delimiter`, markers and `max-uploads`. The table of uploads gains a column (`one_call`, added at start) that tells a write in one call, which is not listed, from an upload in parts (during a rolling upgrade, a write in one call that an older replica makes may show in the list for the seconds it lasts).
 
