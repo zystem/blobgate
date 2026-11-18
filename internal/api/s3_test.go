@@ -600,10 +600,11 @@ func TestS3MetadataNamesAreLowerCaseOnTheWire(t *testing.T) {
 	cw.Header().Set("X-Blobgate-Meta-Owner", "me")
 	cw.Header().Set("ETag", `"x"`)
 	cw.WriteHeader(200)
-	if v := rec.Header()["x-amz-meta-owner"]; len(v) != 1 || v[0] != "me" {
-		t.Fatalf("the metadata went out as %v", rec.Header())
+	wire := map[string][]string(rec.Header()) // as the server writes it: the names are not made canonical
+	if v := wire["x-amz-meta-owner"]; len(v) != 1 || v[0] != "me" {
+		t.Fatalf("the metadata went out as %v", wire)
 	}
-	if _, ok := rec.Header()["X-Amz-Meta-Owner"]; ok {
+	if _, ok := wire["X-Amz-Meta-Owner"]; ok {
 		t.Fatal("the name with capitals went out too")
 	}
 }
