@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/zystem/blobgate/internal/auth"
+	"github.com/zystem/blobgate/internal/rq"
 )
 
 // s3Client is the SDK of AWS (the client that the tools are made of) pointed at the S3 door of the rig, as the tenant 001, or the one named.
@@ -723,5 +725,106 @@ func TestS3ListMultipartUploads(t *testing.T) {
 	}
 	if _, err := c.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{Bucket: aws.String("main"), UploadIdMarker: aws.String("x")}); err == nil || !strings.Contains(err.Error(), "InvalidArgument") {
 		t.Fatalf("an upload id marker with no key marker: %v", err)
+	}
+}
+
+// The ETag of an object made of parts is what S3 makes it: the MD5 of the MD5s of the parts one after another, a dash and the number of parts. The listing, the head, the read, a copy and the answer of the
+// completion say the same; an object written in one call keeps the MD5 of its bytes; a part written before the module kept the MD5 of parts gives the old kind of name.
+func TestS3MultipartETagIsTheOneOfS3(t *testing.T) {
+	for _, mode := range []string{"", "tenant"} {
+		t.Run("dedup="+mode, func(t *testing.T) {
+			r := newRig(t, nil)
+			r.dedupStore(mode, 0, "")
+			c := r.s3Client("001", secret1)
+			ctx := context.Background()
+			body := pattern(2*(8<<20) + 100000)
+			parts := [][]byte{body[:8<<20], body[8<<20 : 16<<20], body[16<<20:]}
+			var raw []byte
+			for _, p := range parts {
+				s := md5.Sum(p)
+				raw = append(raw, s[:]...)
+			}
+			sum := md5.Sum(raw)
+			want := fmt.Sprintf(`"%s-3"`, hex.EncodeToString(sum[:]))
+			upload := func(key string, forgetMD5 bool) string {
+				cu, err := c.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String(key)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var done []types.CompletedPart
+				for i, p := range parts {
+					up, err := c.UploadPart(ctx, &s3.UploadPartInput{Bucket: aws.String("main"), Key: aws.String(key), UploadId: cu.UploadId, PartNumber: aws.Int32(int32(i + 1)), Body: bytes.NewReader(p)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					done = append(done, types.CompletedPart{ETag: up.ETag, PartNumber: aws.Int32(int32(i + 1))})
+				}
+				if forgetMD5 {
+					if _, err := r.dbc.Exec(ctx, true, rq.S("UPDATE storage_parts SET md5 = '' WHERE upload = ?", aws.ToString(cu.UploadId))); err != nil {
+						t.Fatal(err)
+					}
+				}
+				co, err := c.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{Bucket: aws.String("main"), Key: aws.String(key), UploadId: cu.UploadId, MultipartUpload: &types.CompletedMultipartUpload{Parts: done}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return aws.ToString(co.ETag)
+			}
+			if got := upload("multi", false); got != want {
+				t.Fatalf("the completion says %s, S3 would say %s", got, want)
+			}
+			h, err := c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String("main"), Key: aws.String("multi")})
+			if err != nil || aws.ToString(h.ETag) != want {
+				t.Fatalf("head: %v %s", err, aws.ToString(h.ETag))
+			}
+			g, err := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("main"), Key: aws.String("multi")})
+			if err != nil || aws.ToString(g.ETag) != want {
+				t.Fatalf("get: %v %s", err, aws.ToString(g.ETag))
+			}
+			g.Body.Close()
+			// a copy by the set keeps it; the listing says the same
+			if mode != "" {
+				if _, err := c.CopyObject(ctx, &s3.CopyObjectInput{Bucket: aws.String("main"), Key: aws.String("multi-copy"), CopySource: aws.String("main/multi")}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lo, err := c.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String("main")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, o := range lo.Contents {
+				if aws.ToString(o.ETag) != want {
+					t.Fatalf("the listing says %s for %s, the head said %s", aws.ToString(o.ETag), aws.ToString(o.Key), want)
+				}
+			}
+			// the same bytes in one call: the MD5 of the bytes, and the listing and the read agree
+			pr, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("main"), Key: aws.String("one-call"), Body: bytes.NewReader(body)})
+			whole := md5.Sum(body)
+			if err != nil || aws.ToString(pr.ETag) != `"`+hex.EncodeToString(whole[:])+`"` {
+				t.Fatalf("one call: %v %s", err, aws.ToString(pr.ETag))
+			}
+			g2, _ := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("main"), Key: aws.String("one-call")})
+			g2.Body.Close()
+			if aws.ToString(g2.ETag) != aws.ToString(pr.ETag) {
+				t.Fatalf("one call read: %s", aws.ToString(g2.ETag))
+			}
+			// parts with no MD5 (an upload that began before the upgrade): the old kind of name, the object is the same
+			old := upload("old-kind", true)
+			// with no MD5 of its parts the object has the old kind of name; in a store of sets that already holds these bytes written in one call, the set knows the MD5 of the bytes and the name is that
+			wantOld := regexp.MustCompile(`^"[0-9a-f]{32}-[0-9]+"$`)
+			if mode != "" {
+				wantOld = regexp.MustCompile(`^"` + hex.EncodeToString(whole[:]) + `"$`)
+			}
+			if old == want || !wantOld.MatchString(old) {
+				t.Fatalf("the name of an upload whose parts have no MD5: %s", old)
+			}
+			if d, _ := io.ReadAll(func() io.Reader {
+				g, _ := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("main"), Key: aws.String("old-kind")})
+				return g.Body
+			}()); !bytes.Equal(d, body) {
+				t.Fatal("the object of the old kind is not the bytes")
+			}
+			r.refsAreTheRows()
+		})
 	}
 }

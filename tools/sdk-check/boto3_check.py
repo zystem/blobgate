@@ -63,6 +63,12 @@ def managed_upload_download():
         s3.upload_file(src, bucket, "b/big", Config=cfg)
         s3.download_file(bucket, "b/big", dst, Config=cfg)
         assert sha(open(dst, "rb").read()) == sha(big)
+        # the ETag of an object made of parts is the one S3 makes: the MD5 of the MD5s of the parts, a dash, the number of parts
+        part = 8 * 1024 * 1024
+        parts = [big[i:i + part] for i in range(0, len(big), part)]
+        want = '"%s-%d"' % (hashlib.md5(b"".join(hashlib.md5(p).digest() for p in parts)).hexdigest(), len(parts))
+        got = s3.head_object(Bucket=bucket, Key="b/big")["ETag"]
+        assert got == want, "ETag %s, S3 would make %s" % (got, want)
 
 
 def copies():

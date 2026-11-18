@@ -57,6 +57,7 @@ var columns = [][3]string{
 	{"storage_parts", "stored_sha256", "TEXT NOT NULL DEFAULT ''"}, // of the block as stored (sealed); sha256 stays that of what the shim sent, which the core compares
 	{"storage_parts", "stored_size", "INTEGER NOT NULL DEFAULT 0"},
 	{"storage_parts", "enc", "INTEGER NOT NULL DEFAULT 0"},
+	{"storage_parts", "md5", "TEXT NOT NULL DEFAULT ''"},   // MD5 of the part as the writer sent it (hex): what the ETag of a multipart object of S3 is made of; '' for a part written before this column
 	{"storage_objects", "md5", "TEXT NOT NULL DEFAULT ''"}, // MD5 of the whole body, when the write saw it all (the ETag of S3 for an object written in one call); '' otherwise
 	{"storage_sets", "md5", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_sets", "scope", "TEXT NOT NULL DEFAULT ''"},  // who may share the set: the tenant, or '' for the whole store
