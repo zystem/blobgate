@@ -32,3 +32,5 @@ for CiNim (D-60), and nothing is read from the old layout.
 
 **0.10.0** adds ListMultipartUploads to the S3 door; the table of uploads gains a column (`one_call`) that the program adds at start, by itself. Two answers of the S3 door change to what S3 does: the names of the metadata go out in lower case (`x-amz-meta-owner`), and a listing of nothing says `KeyCount` 0. A client that read the names of the metadata with their capitals (it was `X-Amz-Meta-Owner`) must read them without: HTTP names are not case sensitive, and the SDKs do not look at the case. During a rolling upgrade a write in one call that an older replica makes may show in the list of uploads for the seconds it lasts.
 
+
+**0.11.0** makes the `ETag` of an object made of parts the one S3 makes (the MD5 of the MD5s of the parts, a dash, the number of parts). The table of parts gains a column `md5` at start; nothing is to be done by hand. Objects written before keep their ETag, and an upload that is going on at the upgrade is completed with the older name; a client that keeps ETags sees no change for what it already holds.
