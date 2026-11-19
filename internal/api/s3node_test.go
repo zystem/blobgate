@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/zystem/blobgate/internal/maint"
+	"github.com/zystem/blobgate/internal/store"
 )
 
 const seaweedName = "blobgate-test-seaweed"
@@ -218,5 +219,69 @@ func TestRealS3NodeAwayAsMirrorNode(t *testing.T) {
 	}
 	if !bytes.Equal(readBack(t, c, "mix", "big"), body) || len(readBack(t, c, "mix", "small")) != 1<<20 {
 		t.Fatal("the repaired node does not hold the objects")
+	}
+}
+
+// A node that goes silent with its connections open (docker pause: the process is frozen, nothing is answered and nothing is closed; a power cut or a cable pulled does the same): for each of the
+// WebDAV, FTP and SFTP of SFTPGo, in a mirror whose first node is the silent one, a write in one call, a write in parts and a read are not held for longer than the idle timeout lets them
+// (BLOBGATE_NODE_TIMEOUT_SECONDS, set to 5 s here); the other node serves them, and the copy for the silent node is queued.
+func TestRealSilentNodes(t *testing.T) {
+	good, silent := startSFTPGo(t, "good8"), startSFTPGo(t, "silent8")
+	old := store.NodeTimeout
+	store.NodeTimeout = 5 * time.Second
+	oldRe := store.ReopenAfter
+	store.ReopenAfter = 3 * time.Second
+	t.Cleanup(func() { store.NodeTimeout, store.ReopenAfter = old, oldRe })
+	r := newRig(t, nil)
+	kinds := map[string]map[string]any{"webdav": silent.webdav(), "ftp": silent.ftp(), "sftp": silent.sftp()}
+	for name, n := range kinds {
+		if code, d := r.admin("PUT", "/v1/admin/stores/"+name, map[string]any{"kind": "mirror", "min_acks": 1, "nodes": []any{n, good.webdav()}}); code != 200 {
+			t.Fatalf("register %s: %d %s", name, code, d)
+		}
+	}
+	c := r.s3Client("001", secret1)
+	ctx := context.Background()
+	if out, err := exec.Command("docker", "pause", silent.name).CombinedOutput(); err != nil {
+		t.Fatalf("docker pause: %v %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "unpause", silent.name).Run() })
+	for name := range kinds {
+		t0 := time.Now()
+		small := pattern(3<<20 + 5)
+		if _, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(name), Key: aws.String("small"), Body: bytes.NewReader(small)}); err != nil {
+			t.Fatalf("%s: a write in one call with a silent node: %v", name, err)
+		}
+		t.Logf("%s: write in one call %v", name, time.Since(t0).Round(time.Second))
+		t0 = time.Now()
+		big := pattern(17<<20 + 5)
+		if err := uploadParts(ctx, c, name, "big", big, 8<<20); err != nil {
+			t.Fatalf("%s: an upload in parts with a silent node: %v", name, err)
+		}
+		t.Logf("%s: upload in parts %v", name, time.Since(t0).Round(time.Second))
+		t0 = time.Now()
+		if !bytes.Equal(readBack(t, c, name, "small"), small) || !bytes.Equal(readBack(t, c, name, "big"), big) {
+			t.Fatalf("%s: a read with a silent node is not what was written", name)
+		}
+		t.Logf("%s: reads %v", name, time.Since(t0).Round(time.Second))
+	}
+	if r.dbCount("storage_repair") < 1 {
+		t.Fatal("no copy for the silent node was queued")
+	}
+	// the node comes back: the store opens its nodes again (the SFTP one was not opened at all) and the repair gives it every block
+	if out, err := exec.Command("docker", "unpause", silent.name).CombinedOutput(); err != nil {
+		t.Fatalf("docker unpause: %v %s", err, out)
+	}
+	w := r.worker("w8", func(c *maint.Config) { c.RetryBase = time.Second })
+	w.Lease(ctx, "repair")
+	for i := 0; i < 30 && r.dbCount("storage_repair") > 0; i++ {
+		_, _ = c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String("sftp"), Key: aws.String("small")}) // a call that finds the time to open the nodes again passed
+		w.Pass(ctx)
+		time.Sleep(2 * time.Second)
+	}
+	if n := r.dbCount("storage_repair"); n != 0 {
+		t.Fatalf("%d repair tasks left after the node came back", n)
+	}
+	if len(silent.files()) == 0 || len(silent.sftpFiles()) == 0 {
+		t.Fatalf("the silent node holds nothing after the repair: %v %v", silent.files(), silent.sftpFiles())
 	}
 }
