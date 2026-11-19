@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-20
+
 ### Fixed
 * **A store whose node is down or silent when it is loaded still serves.** The SFTP backend of rclone connects when it is made, so a replica that loaded a store (at start, or after a change of its settings) while one SFTP node was away or silent could not open the store at all: every call answered `502`, though `min_acks` and the other nodes were enough. Now such a node is put in as one that fails every call (the others serve and the copies for it are queued), and the nodes are opened again every 10 seconds, in the background, until it is back. A store that cannot reach `min_acks` nodes at load is still refused. Found with a frozen SFTPGo (`docker pause`: nothing answered, nothing closed), which also showed that WebDAV and FTP nodes in that state are given up by the idle timeout of 0.11.1 (`TestRealSilentNodes`).
 
