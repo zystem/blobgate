@@ -34,3 +34,5 @@ for CiNim (D-60), and nothing is read from the old layout.
 
 
 **0.11.0** makes the `ETag` of an object made of parts the one S3 makes (the MD5 of the MD5s of the parts, a dash, the number of parts). The table of parts gains a column `md5` at start; nothing is to be done by hand. Objects written before keep their ETag, and an upload that is going on at the upgrade is completed with the older name; a client that keeps ETags sees no change for what it already holds.
+
+**0.11.1** gives the calls to nodes an idle timeout (`BLOBGATE_NODE_TIMEOUT_SECONDS`, 30 s) and 3 retries (`BLOBGATE_NODE_RETRIES`); rclone's own values were 5 minutes and 10. Nothing is to be done; set them higher if a node is very slow to start moving bytes.
