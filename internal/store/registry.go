@@ -235,7 +235,7 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 			r.mu.Lock()
 			r.cache[want] = c
 			r.mu.Unlock()
-			go r.reopen(want, row, updated)
+			go r.reopen(context.WithoutCancel(ctx), want, row, updated)
 		}
 		return c.m, nil
 	}
@@ -279,8 +279,8 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 }
 
 // reopen opens the nodes of a store that was loaded with a node that could not be opened, and puts the new store in the cache when the settings are still the ones it was made from.
-func (r *Registry) reopen(name string, row *rowCache, updated int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+func (r *Registry) reopen(parent context.Context, name string, row *rowCache, updated int64) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	plain, err := seal.Open(r.Key, name, row.secret)
 	if err != nil {
