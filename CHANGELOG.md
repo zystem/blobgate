@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-19
+
 ### Fixed
 * **A node that dies with its connections open no longer holds a write for minutes.** A server that vanishes with no reset (a power cut, a cable pulled; shown with an S3 server stopped under open connections) answers nothing, and rclone waits five minutes for a byte and tries ten times: a part of an upload, or a write in one call, did not end for many minutes (a test of 9 minutes had not seen the refusal yet). The calls to nodes now give up after `BLOBGATE_NODE_TIMEOUT_SECONDS` (default 30) with no byte moving and are tried `BLOBGATE_NODE_RETRIES` times (default 3), so the write is refused with `503`, or, in a mirror with `min_acks` met by the other nodes, goes on and the copy for the dead node is queued. Found with SeaweedFS stopped in the middle of uploads in parts (`s3node_test.go`).
 
