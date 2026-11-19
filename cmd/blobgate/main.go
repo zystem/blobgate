@@ -149,6 +149,12 @@ func main() {
 	reg := store.NewRegistry(c, seal.Key(sealText))
 	metrics.RegisterDB(c, 15*time.Second)
 	sec := func(name string, def int64) time.Duration { return time.Duration(envInt(name, def)) * time.Second }
+	if v := envInt("BLOBGATE_NODE_TIMEOUT_SECONDS", 30); v > 0 {
+		store.NodeTimeout = time.Duration(v) * time.Second
+	}
+	if v := envInt("BLOBGATE_NODE_RETRIES", 3); v > 0 {
+		store.NodeRetries = int(v)
+	}
 	srv := api.New(api.Config{ShardSecrets: secrets, AdminToken: admin, Reserve: envInt("BLOBGATE_RESERVE_BYTES", 0), MaxObject: envInt("BLOBGATE_MAX_OBJECT_BYTES", 0),
 		MaxReads: int(envInt("BLOBGATE_THREADS", 0)), UploadTTL: sec("BLOBGATE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
 	host, _ := os.Hostname()

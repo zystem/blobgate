@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/obscure"
@@ -298,12 +299,24 @@ func isSecret(reg *fs.RegInfo, name string) bool {
 	return false
 }
 
+// NodeTimeout is how long a call to a node may go without a byte moving before it fails (rclone's IO idle timeout; its own default is five minutes), and NodeRetries how many times a call
+// that failed is tried again. A node that dies with its connections open (a power cut, a cable) answers nothing and closes nothing: with rclone's defaults one write waited many minutes
+// and then ten times over. They are set at start from BLOBGATE_NODE_TIMEOUT_SECONDS and BLOBGATE_NODE_RETRIES.
+var (
+	NodeTimeout = 30 * time.Second
+	NodeRetries = 3
+)
+
 // Open makes the Fs of a node.
 func (n NodeSpec) Open(ctx context.Context) (fs.Fs, error) {
 	cs, err := n.ConnString()
 	if err != nil {
 		return nil, err
 	}
+	ctx, ci := fs.AddConfig(ctx) // a copy: the settings of the program are not changed
+	ci.Timeout = fs.Duration(NodeTimeout)
+	ci.ConnectTimeout = fs.Duration(min(NodeTimeout, 10*time.Second))
+	ci.LowLevelRetries = NodeRetries
 	f, err := fs.NewFs(ctx, cs)
 	if err != nil && !errors.Is(err, fs.ErrorIsFile) {
 		return nil, err
