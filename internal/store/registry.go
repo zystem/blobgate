@@ -86,7 +86,11 @@ func (r *Registry) openLock(name string) *sync.Mutex {
 type cached struct {
 	updated int64
 	m       *Mirror
+	retryAt time.Time // not zero: a node could not be opened; at this time the nodes are opened again, in the background
 }
+
+// ReopenAfter is how long a store with a node that could not be opened is served as it is before the nodes are opened again.
+var ReopenAfter = 10 * time.Second
 
 // NewRegistry makes a registry over the database with the key the secrets are sealed under.
 func NewRegistry(db *rq.Client, key seal.Keys) *Registry {
@@ -226,6 +230,13 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 	c, ok := r.cache[want]
 	r.mu.Unlock()
 	if ok && c.updated == updated {
+		if !c.retryAt.IsZero() && time.Now().After(c.retryAt) {
+			c.retryAt = time.Now().Add(ReopenAfter) // one request starts the new try
+			r.mu.Lock()
+			r.cache[want] = c
+			r.mu.Unlock()
+			go r.reopen(want, row, updated)
+		}
 		return c.m, nil
 	}
 	// one request opens the nodes and the others wait for it: twenty at once would make twenty connections to a server that takes a few handshakes at a time
@@ -250,7 +261,7 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 	if cfg.Layout > CurrentLayout {
 		return nil, ErrNewerLayout
 	}
-	m, err := Open(ctx, want, cfg, sec)
+	m, dead, err := open(ctx, want, cfg, sec, true)
 	if err != nil {
 		return nil, err
 	}
@@ -258,15 +269,57 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 		r.OpenHook(m)
 	}
 	r.mu.Lock()
-	r.cache[want] = cached{updated: updated, m: m}
+	c = cached{updated: updated, m: m}
+	if dead > 0 {
+		c.retryAt = time.Now().Add(ReopenAfter)
+	}
+	r.cache[want] = c
 	r.mu.Unlock()
 	return m, nil
 }
 
+// reopen opens the nodes of a store that was loaded with a node that could not be opened, and puts the new store in the cache when the settings are still the ones it was made from.
+func (r *Registry) reopen(name string, row *rowCache, updated int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	plain, err := seal.Open(r.Key, name, row.secret)
+	if err != nil {
+		return
+	}
+	var cfg Config
+	var sec Secrets
+	if json.Unmarshal([]byte(row.config), &cfg) != nil || json.Unmarshal([]byte(plain), &sec) != nil {
+		return
+	}
+	m, dead, err := open(ctx, name, cfg, sec, true)
+	if err != nil {
+		return
+	}
+	if r.OpenHook != nil {
+		r.OpenHook(m)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.cache[name]; !ok || c.updated != updated {
+		return
+	}
+	c := cached{updated: updated, m: m}
+	if dead > 0 {
+		c.retryAt = time.Now().Add(ReopenAfter)
+	}
+	r.cache[name] = c
+}
+
 // Open makes the Mirror of settings (the admin call tries them before it keeps them).
 func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, error) {
+	m, _, err := open(ctx, name, cfg, sec, false)
+	return m, err
+}
+
+// open makes the Mirror. With tolerant, a node that cannot be opened is put in as one that answers every call with the error, as long as the others are enough for min_acks; dead says how many.
+func open(ctx context.Context, name string, cfg Config, sec Secrets, tolerant bool) (m *Mirror, dead int, err error) {
 	specs := cfg.Specs(sec)
-	m := &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL, SoftDelete: time.Duration(cfg.SoftDeleteSeconds) * time.Second, Dedup: cfg.Dedup}
+	m = &Mirror{Name: name, MinAcks: cfg.MinAcks, SpaceURL: cfg.SpaceURL, SoftDelete: time.Duration(cfg.SoftDeleteSeconds) * time.Second, Dedup: cfg.Dedup}
 	if cfg.Encrypt != nil || len(sec.EncKeys) > 0 {
 		var cur uint32
 		if cfg.Encrypt != nil {
@@ -274,21 +327,30 @@ func Open(ctx context.Context, name string, cfg Config, sec Secrets) (*Mirror, e
 		}
 		c, err := NewCipher(cur, sec.EncKeys)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		m.Enc = c
 	}
 	if m.MinAcks <= 0 || m.MinAcks > len(specs) {
 		m.MinAcks = len(specs)
 	}
+	var last error
 	for _, s := range specs {
 		f, err := s.Open(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("node %s: %w", s.ID(), err)
+			if !tolerant {
+				return nil, 0, fmt.Errorf("node %s: %w", s.ID(), err)
+			}
+			dead++
+			last = fmt.Errorf("node %s: %w", s.ID(), err)
+			f = &unreachableFs{name: s.ID(), err: last}
 		}
 		m.Nodes = append(m.Nodes, NewNode(s, f))
 	}
-	return m, nil
+	if dead > 0 && len(specs)-dead < m.MinAcks {
+		return nil, 0, fmt.Errorf("%d of %d nodes cannot be opened, %d are needed: %w", dead, len(specs), m.MinAcks, last)
+	}
+	return m, dead, nil
 }
 
 func (r *Registry) defaultCached(ctx context.Context) (string, error) {
