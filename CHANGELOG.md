@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-11-20
+
 ### Added
 * `BLOBGATE_HELD_BLOCKS` (default 32) and `BLOBGATE_CLIENT_IDLE_SECONDS` (default 120), in the chart `config.heldBlocks` and `config.clientIdleSeconds`; the new answer `503 busy` with `Retry-After`.
 
