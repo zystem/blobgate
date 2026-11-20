@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Fixed
+* **A read that meets a damaged copy repairs it.** A node that gives back a block with the wrong bytes or the wrong length was already passed over (the client never gets wrong bytes: tested with a flipped byte, zeros, a block cut short or in half, longer, and empty, in a plain and a sealed store, on either node, and with both nodes damaged the read is refused with 5xx), but the damaged copy stayed until the deep check (`BLOBGATE_DEEP_CHECK`, off by default) found it, and with the other copy the only good one a second damage would have lost the block. The read now queues a repair for the node it found damaged (the metric `blobgate_node_errors_total` has `op="damaged"`). A damaged copy on a node that the reads do not reach (the first node answers) is still found by the deep check only.
+
 ## [0.11.3] - 2026-11-20
 
 ### Fixed
