@@ -7,7 +7,7 @@ Reference page. `GET /metrics` on the main port with the admin token, or on `BLO
 | `blobgate_requests_total` | counter | route, method, status (`2xx`...) | Requests answered. Routes: `object_put`, `part_put`, `upload_begin`, `upload_complete`, `upload_abort`, `read`, `stat`, `parts`, `object_delete`, `stores`, `admin`, `shim_part_put`, `shim_read`, the routes of the S3 door (`s3_buckets`, `s3_bucket`, `s3_delete_many`, `s3_put`, `s3_get`, `s3_head`, `s3_delete`, `s3_part_put`, `s3_parts`, `s3_upload_begin`, `s3_upload_complete`, `s3_upload_abort`), `health`, `metrics`, `openapi`, `other`. |
 | `blobgate_request_duration_seconds` | histogram | route | Time to answer. |
 | `blobgate_bytes_total` | counter | direction (`in`, `out`) | Bytes of bodies received and sent. |
-| `blobgate_node_errors_total` | counter | store, node, op (`write`, `read`) | Operations a node failed. The node is `<backend>-<hash>`, never a secret. |
+| `blobgate_node_errors_total` | counter | store, node, op (`write`, `read`, `damaged`) | Operations a node failed; `damaged` is a read that met a copy that is there and is not the block (wrong bytes or length), which is taken from the other node and queued for repair. The node is `<backend>-<hash>`, never a secret. |
 | `blobgate_refused_total` | counter | reason (`store_full`) | Writes refused. |
 | `blobgate_store_free_bytes`, `blobgate_store_total_bytes` | gauge | store | Room a store said it had at the last write (stores that say). |
 | `blobgate_repair_pending` | gauge | store | Repair tasks waiting. |

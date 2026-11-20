@@ -278,6 +278,14 @@ func (m *Mirror) put(ctx context.Context, rel string, size int64, src io.Reader,
 
 // ReadBlock reads one whole block from the first node that has it and whose bytes have the wanted SHA-256: a block that fails the check counts as missing on that node. Memory is the block.
 func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64) ([]byte, error) {
+	data, _, err := m.ReadBlockBad(ctx, rel, wantSHA, size)
+	return data, err
+}
+
+// ReadBlockBad is ReadBlock that also says which nodes were met with a copy that is there and is not the block (the wrong bytes, or a wrong length): the caller queues a repair for them, so that damage
+// that a read walked round does not wait for the deep check (off by default) while the other copy is the only good one.
+func (m *Mirror) ReadBlockBad(ctx context.Context, rel, wantSHA string, size int64) ([]byte, []*Node, error) {
+	var bad []*Node
 	var failures []string
 	missing := 0
 	// the nodes that failed a moment ago come last: a dead node first in the list cost its whole timeout for every block
@@ -297,9 +305,15 @@ func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64)
 		switch {
 		case err == nil && sum(data) == wantSHA:
 			node.markUp()
-			return data, nil
+			return data, bad, nil
 		case err == nil:
 			failures = append(failures, node.ID+": the block does not match its digest")
+			bad = append(bad, node)
+			metrics.NodeError(m.Name, node.ID, "damaged")
+		case isWrongBlock(err):
+			failures = append(failures, node.ID+": "+err.Error())
+			bad = append(bad, node)
+			metrics.NodeError(m.Name, node.ID, "damaged")
 		case errors.Is(err, fs.ErrorObjectNotFound) || errors.Is(err, fs.ErrorDirNotFound):
 			missing++
 		default:
@@ -309,10 +323,17 @@ func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64)
 		}
 	}
 	if len(failures) == 0 && missing == len(m.Nodes) {
-		return nil, ErrNotFound
+		return nil, nil, ErrNotFound
 	}
-	return nil, &ErrUnavailable{fmt.Sprintf("no node could give %s: %v", rel, failures)}
+	return nil, bad, &ErrUnavailable{fmt.Sprintf("no node could give %s: %v", rel, failures)}
 }
+
+// errWrongLength is what readWhole says of a block that is shorter or longer than it must be: the node answered, the copy is damaged (not a node that is down).
+type errWrongLength struct{ msg string }
+
+func (e *errWrongLength) Error() string { return e.msg }
+
+func isWrongBlock(err error) bool { var w *errWrongLength; return errors.As(err, &w) }
 
 func sum(b []byte) string {
 	s := sha256.Sum256(b)
@@ -333,13 +354,13 @@ func readWhole(ctx context.Context, n *Node, rel string, size int64) ([]byte, er
 	data := make([]byte, size)
 	if _, err := io.ReadFull(rc, data); err != nil {
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return nil, fmt.Errorf("the block is shorter than the %d bytes it must have", size)
+			return nil, &errWrongLength{fmt.Sprintf("the block is shorter than the %d bytes it must have", size)}
 		}
 		return nil, err
 	}
 	var extra [1]byte
 	if k, _ := rc.Read(extra[:]); k > 0 {
-		return nil, fmt.Errorf("the block is longer than the %d bytes it must have", size)
+		return nil, &errWrongLength{fmt.Sprintf("the block is longer than the %d bytes it must have", size)}
 	}
 	return data, nil
 }
