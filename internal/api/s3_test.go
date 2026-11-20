@@ -26,11 +26,20 @@ import (
 )
 
 // s3Client is the SDK of AWS (the client that the tools are made of) pointed at the S3 door of the rig, as the tenant 001, or the one named.
-func (r *rig) s3Client(tenant, secret string) *s3.Client {
+func (r *rig) s3Client(tenant, secret string) *s3.Client { return r.s3ClientTries(tenant, secret, 0) }
+
+// s3ClientTries is the same with this many attempts of a call (0: the SDK's own three): a test of a refusal does not wait for the same refusal three times.
+func (r *rig) s3ClientTries(tenant, secret string, tries int) *s3.Client {
 	ts := httptest.NewServer(r.s.S3Handler())
 	r.t.Cleanup(ts.Close)
 	cfg := aws.Config{Region: "eu-west-1", Credentials: credentials.NewStaticCredentialsProvider(tenant, auth.S3Secret(secret), "")}
-	return s3.NewFromConfig(cfg, func(o *s3.Options) { o.BaseEndpoint = aws.String(ts.URL); o.UsePathStyle = true })
+	return s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(ts.URL)
+		o.UsePathStyle = true
+		if tries > 0 {
+			o.RetryMaxAttempts = tries
+		}
+	})
 }
 
 // uploadParts is what a tool does for a big object: parts of one size, a list of their ETags, a completion.

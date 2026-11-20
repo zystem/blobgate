@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,7 +93,7 @@ func TestRealS3NodeAwayAsStore(t *testing.T) {
 	if code, d := r.admin("POST", "/v1/admin/stores/weed:check", nil); code != 200 {
 		t.Fatalf(":check %d %s", code, d)
 	}
-	c := r.s3Client("001", secret1)
+	c := r.s3ClientTries("001", secret1, 1)
 	ctx := context.Background()
 	body := pattern(30<<20 + 7)
 
@@ -171,7 +173,7 @@ func TestRealS3NodeAwayAsMirrorNode(t *testing.T) {
 	if code, d := r.admin("POST", "/v1/admin/stores/mix:check", nil); code != 200 {
 		t.Fatalf(":check %d %s", code, d)
 	}
-	c := r.s3Client("001", secret1)
+	c := r.s3ClientTries("001", secret1, 1)
 	ctx := context.Background()
 	body := pattern(30<<20 + 7)
 	nparts := (len(body) + 8<<20 - 1) / (8 << 20)
@@ -239,7 +241,7 @@ func TestRealSilentNodes(t *testing.T) {
 			t.Fatalf("register %s: %d %s", name, code, d)
 		}
 	}
-	c := r.s3Client("001", secret1)
+	c := r.s3ClientTries("001", secret1, 1)
 	ctx := context.Background()
 	if out, err := exec.Command("docker", "pause", silent.name).CombinedOutput(); err != nil {
 		t.Fatalf("docker pause: %v %s", err, out)
@@ -283,5 +285,131 @@ func TestRealSilentNodes(t *testing.T) {
 	}
 	if len(silent.files()) == 0 || len(silent.sftpFiles()) == 0 {
 		t.Fatalf("the silent node holds nothing after the repair: %v %v", silent.files(), silent.sftpFiles())
+	}
+}
+
+// slowProxy is a TCP proxy to a server that passes at most `rate` bytes a second each way (0: no limit) and, when stalled, passes nothing and closes nothing: a link that is slow, and one that
+// stops in the middle of a transfer.
+type slowProxy struct {
+	ln      net.Listener
+	rate    atomic.Int64
+	stalled atomic.Bool
+}
+
+func startSlowProxy(t *testing.T, target string) *slowProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &slowProxy{ln: ln}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			up, err := net.Dial("tcp", target)
+			if err != nil {
+				c.Close()
+				continue
+			}
+			if tc, ok := c.(*net.TCPConn); ok {
+				_ = tc.SetReadBuffer(32 << 10) // a small window: the sender is held back by the link, as on a real one, and does not hand the whole block to the kernel at once
+			}
+			go p.pipe(c, up)
+			go p.pipe(up, c)
+		}
+	}()
+	return p
+}
+
+func (p *slowProxy) port() int { return p.ln.Addr().(*net.TCPAddr).Port }
+
+func (p *slowProxy) pipe(dst, src net.Conn) {
+	defer dst.Close()
+	defer src.Close()
+	buf := make([]byte, 16<<10)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			for p.stalled.Load() {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if r := p.rate.Load(); r > 0 {
+				time.Sleep(time.Duration(int64(n) * int64(time.Second) / r))
+			}
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// A node on a slow link is not cut while bytes move (the idle timeout of 5 s here; an object of 24 MiB takes about 12 s at 2 MiB/s): a write that every node has to confirm (min_acks 2) ends
+// with both, and a read is whole. A link that stops in the middle of a transfer is cut after the timeout: with min_acks 1 the write goes on with the other node, with min_acks 2 it is refused with
+// words, in both cases within a bounded time.
+func TestRealSlowAndStalledLink(t *testing.T) {
+	good, far := startSFTPGo(t, "good9"), startSFTPGo(t, "far9")
+	old := store.NodeTimeout
+	store.NodeTimeout = 5 * time.Second
+	t.Cleanup(func() { store.NodeTimeout = old })
+	proxy := startSlowProxy(t, fmt.Sprintf("127.0.0.1:%d", far.webdavP))
+	slow := map[string]any{"remote": fmt.Sprintf(":webdav,url='http://127.0.0.1:%d',vendor=other,user=u1:/blobs", proxy.port()), "secrets": map[string]string{"pass": "userpass123"}}
+	r := newRig(t, nil)
+	for name, acks := range map[string]int{"both": 2, "one": 1} {
+		if code, d := r.admin("PUT", "/v1/admin/stores/"+name, map[string]any{"kind": "mirror", "min_acks": acks, "nodes": []any{good.webdav(), slow}}); code != 200 {
+			t.Fatalf("register %s: %d %s", name, code, d)
+		}
+	}
+	c := r.s3ClientTries("001", secret1, 1)
+	ctx := context.Background()
+	body := pattern(24<<20 + 5)
+
+	proxy.rate.Store(2 << 20)
+	t0 := time.Now()
+	if _, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("both"), Key: aws.String("slow"), Body: bytes.NewReader(body)}); err != nil {
+		t.Fatalf("a write over a slow link that every node must confirm: %v (after %v)", err, time.Since(t0).Round(time.Second))
+	}
+	took := time.Since(t0)
+	t.Logf("write over the slow link: %v", took.Round(time.Second))
+	if took < 8*time.Second {
+		t.Fatalf("the link was not slow (%v): the test proves nothing", took)
+	}
+	if n := len(far.files()); n == 0 {
+		t.Fatal("the slow node holds nothing though every node had to confirm")
+	}
+	if !bytes.Equal(readBack(t, c, "both", "slow"), body) {
+		t.Fatal("the object written over a slow link is not what was sent")
+	}
+
+	// the link stops in the middle
+	proxy.rate.Store(4 << 20) // 40 MiB take 10 s; the link stops after 2
+	proxy.stalled.Store(false)
+	go func() { time.Sleep(2 * time.Second); proxy.stalled.Store(true) }()
+	t0 = time.Now()
+	_, err := c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("one"), Key: aws.String("stalled"), Body: bytes.NewReader(pattern(40 << 20))})
+	t.Logf("write over a link that stops, min_acks 1: %v after %v", err, time.Since(t0).Round(time.Second))
+	if err != nil {
+		t.Fatalf("with min_acks 1 the write goes on with the other node: %v", err)
+	}
+	if time.Since(t0) > 90*time.Second {
+		t.Fatalf("the write waited %v for a link that stopped", time.Since(t0))
+	}
+	t0 = time.Now()
+	_, err = c.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String("both"), Key: aws.String("stalled2"), Body: bytes.NewReader(pattern(3 << 20))})
+	t.Logf("write over a link that stopped, min_acks 2: %v after %v", err, time.Since(t0).Round(time.Second))
+	if err == nil {
+		t.Fatal("a write that every node must confirm was taken while a link is stopped")
+	}
+	if time.Since(t0) > 90*time.Second {
+		t.Fatalf("the refusal took %v", time.Since(t0))
+	}
+	if lo, err := c.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String("both")}); err != nil || len(lo.Contents) != 1 {
+		t.Fatalf("the list after the refused write: %v %v", err, lo)
 	}
 }

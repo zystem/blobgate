@@ -32,7 +32,7 @@ jobs:
         env:
           BLOBGATE_RQLITE_URL: http://127.0.0.1:4001
           BLOBGATE_DOCKER_TESTS: "1"
-        run: go test -race -count=1 -coverpkg=./cmd/blobgate,./internal/... -coverprofile=cover.out ./cmd/blobgate ./internal/...
+        run: go test -race -count=1 -timeout 25m -coverpkg=./cmd/blobgate,./internal/... -coverprofile=cover.out ./cmd/blobgate ./internal/...
       - name: Statement coverage must stay at 80% or more
         run: |
           total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')

@@ -5,6 +5,10 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Fixed
+* **A node that stops in the middle of a block no longer takes the healthy nodes with it.** The bytes of a write went to the nodes one after the other, so a node whose connection was open and silent held up the next node's bytes until its own timeout, and the healthy node was cut by its own idle timeout at the same moment: `0 of 2 nodes took the block` with one node well (shown with a link that stops, `TestRealSlowAndStalledLink`). Every node now has a short queue (2 MiB) of its own; a node that takes nothing for half of `BLOBGATE_NODE_TIMEOUT_SECONDS` is left behind and the write goes on with the others (the copy for it is queued).
+* **A dead node is met once, not for every block.** Every block of every write, and every read that began with it, paid the whole timeout of the dead node again (a write of 40 MiB took 87 seconds in the test, one of 100 MiB would take many minutes with the defaults). A node that fails a write or a read is now left for 10 seconds (the others are tried first; a write does not wait for it, and the copy is queued); the test above takes 23 seconds. During those 10 seconds a write that needs every node (`min_acks` equal to the number of nodes) is refused. Slow links: the idle timeout is measured from the moment the block is in the buffers of the connection, so a link slower than about 150 KB/s needs a larger `BLOBGATE_NODE_TIMEOUT_SECONDS` (docs/configuration.md); a link that is slow but moving is not cut (tested at 2 MiB/s with a timeout of 5 seconds).
+
 ## [0.11.2] - 2026-11-20
 
 ### Fixed
