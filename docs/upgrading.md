@@ -38,3 +38,5 @@ for CiNim (D-60), and nothing is read from the old layout.
 **0.11.1** gives the calls to nodes an idle timeout (`BLOBGATE_NODE_TIMEOUT_SECONDS`, 30 s) and 3 retries (`BLOBGATE_NODE_RETRIES`); rclone's own values were 5 minutes and 10. Nothing is to be done; set them higher if a node is very slow to start moving bytes.
 
 **0.11.2** opens a store whose node cannot be reached at load (the SFTP backend connects when it is made) and opens the node again every 10 seconds; nothing is to be done.
+
+**0.11.3** gives every node its own short queue of bytes and leaves a node that failed alone for 10 seconds (the others are tried first). During those 10 seconds a write that needs every node (`min_acks` equal to the number of nodes) is refused. A link slower than about 150 KB/s needs a larger `BLOBGATE_NODE_TIMEOUT_SECONDS` (see docs/configuration.md). Nothing else is to be done.
