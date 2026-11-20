@@ -9,6 +9,7 @@ import (
 	"io"
 	"path"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rclone/rclone/fs"
@@ -24,12 +25,23 @@ type Node struct {
 	Spec NodeSpec
 	F    fs.Fs
 
-	slots chan struct{} // how many writes a node takes at once (a server limits the connections and the handshakes it takes from one client; 24 writers made an SFTP server refuse some)
-	made  sync.Map      // directories that this process has made on the node
-	mkMu  sync.Mutex    // directories are made one at a time on a node: two writers that make the same parent at the same moment make some servers answer "file exists" (SFTP) and fail
+	downUntil atomic.Int64  // unix nanoseconds: a write or a read of this node failed a moment ago, so until then the others are tried first and a write does not wait for it (see NodeBackoff)
+	slots     chan struct{} // how many writes a node takes at once (a server limits the connections and the handshakes it takes from one client; 24 writers made an SFTP server refuse some)
+	made      sync.Map      // directories that this process has made on the node
+	mkMu      sync.Mutex    // directories are made one at a time on a node: two writers that make the same parent at the same moment make some servers answer "file exists" (SFTP) and fail
 }
 
 // NewNode makes a node of an opened Fs; it takes NodeWrites writes at the same time.
+// NodeBackoff is how long a node that failed a write or a read is left alone while others can serve: with a dead node every block of every write paid the whole timeout of the node again (a
+// write of 100 MiB with one dead node waited for twenty minutes). The copy for it is queued as before; it is tried again when the time is over.
+var NodeBackoff = 10 * time.Second
+
+func (n *Node) down() bool { return time.Now().UnixNano() < n.downUntil.Load() }
+func (n *Node) markDown()  { n.downUntil.Store(time.Now().Add(NodeBackoff).UnixNano()) }
+func (n *Node) markUp()    { n.downUntil.Store(0) }
+
+var errSkipped = errors.New("the node failed a moment ago and is not tried again yet")
+
 func NewNode(spec NodeSpec, f fs.Fs) *Node {
 	return &Node{ID: spec.ID(), Spec: spec, F: f, slots: make(chan struct{}, NodeWrites)}
 }
@@ -90,37 +102,83 @@ type WriteResult struct {
 	Errs   []error // why, in the same order
 }
 
+// fanout hands the bytes of a write to every node. Each node has a lane: a short queue of chunks and a goroutine that writes them to the pipe the node reads from, so that a node that stops
+// taking bytes (it died in the middle of a block; its connection is open and silent) holds up only its own lane and not the nodes that are well: they would otherwise wait with no byte
+// moving for as long as the dead one is given, and be cut by their own idle timeout at the same time.
 type fanout struct {
 	pipes []*io.PipeWriter
-	alive []bool
+	lanes []chan []byte
+	dead  []atomic.Bool // the node failed, or was left behind: no more bytes are given to it
 	errs  []error
 }
+
+// laneChunks is how many chunks (256 KiB each) a node may be behind the others; a node that has not taken one for half of NodeTimeout is left behind (it fails the write; the repair queue gets it).
+const laneChunks = 8
 
 // Put reads size bytes from src and writes them to every node under rel, at the same time, without holding the block: the slowest node sets the pace. It returns when every node
 // is done. The error is non-nil when fewer than MinAcks nodes took the block (the bytes that did arrive are left for the caller to delete) or src failed.
 func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader) (WriteResult, error) {
+	return m.put(ctx, rel, size, src, true)
+}
+
+func (m *Mirror) put(ctx context.Context, rel string, size int64, src io.Reader, breaker bool) (WriteResult, error) {
 	n := len(m.Nodes)
+	// the nodes that failed a moment ago are skipped, unless every node did (then there is nothing else to try)
+	skip := make([]bool, n)
+	if breaker {
+		up := 0
+		for i, node := range m.Nodes {
+			skip[i] = node.down()
+			if !skip[i] {
+				up++
+			}
+		}
+		if up == 0 {
+			skip = make([]bool, n)
+		}
+	}
 	// a place on every node, taken in the order of the nodes: two writers that wait for each other's nodes would never end if they took them in another order
-	taken := 0
+	var held []*Node
 	defer func() {
-		for i := 0; i < taken; i++ {
-			<-m.Nodes[i].slots
+		for _, node := range held {
+			<-node.slots
 		}
 	}()
-	for _, node := range m.Nodes {
+	for i, node := range m.Nodes {
+		if skip[i] {
+			continue
+		}
 		select {
 		case node.slots <- struct{}{}:
-			taken++
+			held = append(held, node)
 		case <-ctx.Done():
 			return WriteResult{}, ctx.Err()
 		}
 	}
-	fo := &fanout{pipes: make([]*io.PipeWriter, n), alive: make([]bool, n), errs: make([]error, n)}
-	var wg sync.WaitGroup
+	fo := &fanout{pipes: make([]*io.PipeWriter, n), lanes: make([]chan []byte, n), dead: make([]atomic.Bool, n), errs: make([]error, n)}
+	var wg, lanes sync.WaitGroup
 	readers := make([]*io.PipeReader, n)
 	for i, node := range m.Nodes {
 		pr, pw := io.Pipe()
-		readers[i], fo.pipes[i], fo.alive[i] = pr, pw, true
+		readers[i], fo.pipes[i] = pr, pw
+		fo.lanes[i] = make(chan []byte, laneChunks)
+		if skip[i] {
+			fo.dead[i].Store(true)
+			fo.errs[i] = errSkipped
+			continue
+		}
+		lanes.Add(1)
+		go func(i int) {
+			defer lanes.Done()
+			for chunk := range fo.lanes[i] {
+				if fo.dead[i].Load() {
+					continue // what is left in the queue of a node that failed is dropped
+				}
+				if _, werr := fo.pipes[i].Write(chunk); werr != nil {
+					fo.dead[i].Store(true)
+				}
+			}
+		}(i)
 		wg.Add(1)
 		go func(i int, node *Node, pr *io.PipeReader) {
 			defer wg.Done()
@@ -141,11 +199,19 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 		if k > 0 {
 			h.Write(buf[:k])
 			total += int64(k)
-			for i := range fo.pipes {
-				if fo.alive[i] {
-					if _, werr := fo.pipes[i].Write(buf[:k]); werr != nil {
-						fo.alive[i] = false
-					}
+			for i := range fo.lanes {
+				if fo.dead[i].Load() {
+					continue
+				}
+				chunk := make([]byte, k)
+				copy(chunk, buf[:k])
+				timer := time.NewTimer(NodeTimeout / 2)
+				select {
+				case fo.lanes[i] <- chunk:
+					timer.Stop()
+				case <-timer.C: // a node that takes nothing for half the idle timeout is left behind, so that the nodes that are well are not held longer than their own timeout
+					fo.dead[i].Store(true)
+					fo.pipes[i].CloseWithError(errors.New("the node stopped taking bytes"))
 				}
 			}
 		}
@@ -159,6 +225,10 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 	if srcErr == nil && total != size {
 		srcErr = fmt.Errorf("the body is %d bytes, not the %d announced", total, size)
 	}
+	for _, ch := range fo.lanes {
+		close(ch)
+	}
+	lanes.Wait()
 	for _, pw := range fo.pipes {
 		if srcErr != nil {
 			pw.CloseWithError(srcErr)
@@ -170,8 +240,9 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 	res := WriteResult{SHA256: hex.EncodeToString(h.Sum(nil)), Bytes: total}
 	ok := 0
 	for i, node := range m.Nodes {
-		if fo.errs[i] == nil && fo.alive[i] {
+		if fo.errs[i] == nil && !fo.dead[i].Load() {
 			ok++
+			node.markUp()
 			continue
 		}
 		e := fo.errs[i]
@@ -180,6 +251,9 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 		}
 		res.Failed = append(res.Failed, node)
 		res.Errs = append(res.Errs, e)
+		if !skip[i] && srcErr == nil && !IsNoSpace(e) {
+			node.markDown()
+		}
 		metrics.NodeError(m.Name, node.ID, "write")
 	}
 	if srcErr != nil {
@@ -206,10 +280,23 @@ func (m *Mirror) Put(ctx context.Context, rel string, size int64, src io.Reader)
 func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64) ([]byte, error) {
 	var failures []string
 	missing := 0
+	// the nodes that failed a moment ago come last: a dead node first in the list cost its whole timeout for every block
+	order := make([]*Node, 0, len(m.Nodes))
 	for _, node := range m.Nodes {
+		if !node.down() {
+			order = append(order, node)
+		}
+	}
+	for _, node := range m.Nodes {
+		if node.down() {
+			order = append(order, node)
+		}
+	}
+	for _, node := range order {
 		data, err := readWhole(ctx, node, rel, size)
 		switch {
 		case err == nil && sum(data) == wantSHA:
+			node.markUp()
 			return data, nil
 		case err == nil:
 			failures = append(failures, node.ID+": the block does not match its digest")
@@ -217,6 +304,7 @@ func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64)
 			missing++
 		default:
 			failures = append(failures, node.ID+": "+err.Error())
+			node.markDown()
 			metrics.NodeError(m.Name, node.ID, "read")
 		}
 	}
@@ -334,7 +422,7 @@ func (m *Mirror) Free(ctx context.Context) space.Info {
 func (m *Mirror) Check(ctx context.Context) string {
 	body := []byte("blobgate store check")
 	rel := "_check/probe~check/0"
-	res, err := m.Put(ctx, rel, int64(len(body)), bytesReader(body))
+	res, err := m.put(ctx, rel, int64(len(body)), bytesReader(body), false)
 	if err != nil {
 		return "put: " + err.Error()
 	}
