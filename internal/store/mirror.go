@@ -31,7 +31,6 @@ type Node struct {
 	mkMu      sync.Mutex    // directories are made one at a time on a node: two writers that make the same parent at the same moment make some servers answer "file exists" (SFTP) and fail
 }
 
-// NewNode makes a node of an opened Fs; it takes NodeWrites writes at the same time.
 // NodeBackoff is how long a node that failed a write or a read is left alone while others can serve: with a dead node every block of every write paid the whole timeout of the node again (a
 // write of 100 MiB with one dead node waited for twenty minutes). The copy for it is queued as before; it is tried again when the time is over.
 var NodeBackoff = 10 * time.Second
@@ -42,6 +41,7 @@ func (n *Node) markUp()    { n.downUntil.Store(0) }
 
 var errSkipped = errors.New("the node failed a moment ago and is not tried again yet")
 
+// NewNode makes a node of an opened Fs; it takes NodeWrites writes at the same time.
 func NewNode(spec NodeSpec, f fs.Fs) *Node {
 	return &Node{ID: spec.ID(), Spec: spec, F: f, slots: make(chan struct{}, NodeWrites)}
 }
