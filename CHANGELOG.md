@@ -5,6 +5,13 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Added
+* `BLOBGATE_HELD_BLOCKS` (default 32) and `BLOBGATE_CLIENT_IDLE_SECONDS` (default 120), in the chart `config.heldBlocks` and `config.clientIdleSeconds`; the new answer `503 busy` with `Retry-After`.
+
+### Fixed
+* **Clients that go slow or quiet no longer hold memory and places without end.** Measured with 48 clients that took one byte of a big object and stopped: the module held 385 MiB (a block of 8 MiB each), and the same for 48 writers of no known length that sent 3 MiB and stopped; the limit `BLOBGATE_THREADS` that the documents named for it bounded only the reads from the nodes (the place was freed before the block was sent). With the default memory limit of the chart (512 MiB) some 60 slow readers would have ended the process. Now the blocks held for clients are bounded by `BLOBGATE_HELD_BLOCKS` (the same test: 32 MiB with 4 places), a call that finds no place is told `503 busy`, and a client with no byte moving for `BLOBGATE_CLIENT_IDLE_SECONDS` is ended, which also frees the places of `BLOBGATE_THREADS` that quiet writers into a store that seals held for ever (four quiet writers stopped every such write).
+* Tests of a client that leaves in the middle of an object (no slot or goroutine is left), one that stalls (it does not stop the others even with one read at a time), and a node that gives out after the first blocks went (the reader meets a cut, never a short answer that looks whole).
+
 ## [0.11.4] - 2026-11-20
 
 ### Fixed

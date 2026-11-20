@@ -619,6 +619,14 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		total, blocks, plain, enc, digest = size, []string{w0.stored}, []string{w0.plain}, w0.enc, w0.plain
 		md5sum = hex.EncodeToString(sum5.Sum(nil))
 	default:
+		if err := s.hold(ctx, true); err != nil { // the buffer of a block is held for as long as the writer takes to send it
+			_, _ = s.DB.Exec(context.WithoutCancel(ctx), false, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
+			if errors.Is(err, errBusy) {
+				busy(w)
+			}
+			return // or the client has gone
+		}
+		defer s.unhold()
 		buf := make([]byte, BlockSize)
 		whole := sha256.New()
 		for n := 0; ; n++ {
@@ -1135,6 +1143,43 @@ func (s *Server) head(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 	w.WriteHeader(200)
 }
 
+// errBusy is a call that waited for a place to hold a block and found none.
+var errBusy = errors.New("the module holds as many blocks for clients as it may")
+
+// hold takes a place for one block that is held in memory for a client. The first block of a call waits a short time and then gives up (the caller answers 503 with Retry-After); one that is on its way
+// waits for as long as the client does.
+func (s *Server) hold(ctx context.Context, first bool) error {
+	select {
+	case s.held <- struct{}{}:
+		return nil
+	default:
+	}
+	var timeout <-chan time.Time
+	if first {
+		t := time.NewTimer(holdWait)
+		defer t.Stop()
+		timeout = t.C
+	}
+	select {
+	case s.held <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timeout:
+		return errBusy
+	}
+}
+
+func (s *Server) unhold() { <-s.held }
+
+// holdWait is how long the first block of a call waits for a place.
+var holdWait = 30 * time.Second
+
+func busy(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	problem(w, 503, "busy", "the module holds as many blocks for clients as it may (BLOBGATE_HELD_BLOCKS); try again")
+}
+
 // streamRange sends bytes a..b of the object (b is within it). A block is read whole and checked against its digest before a byte of it is sent; the first block is read before the status is written, so
 // that an object that cannot be read is an error and not a broken answer. partial says whether the answer is 206 (a range) or 200 (the whole).
 func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string, o *objectRow, a, b int64, partial bool) {
@@ -1166,8 +1211,15 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 		lo, hi := max(a-start, 0), min(b-start+1, int64(len(data)))
 		return data[lo:hi]
 	}
+	if err := s.hold(r.Context(), true); err != nil {
+		if errors.Is(err, errBusy) {
+			busy(w)
+		}
+		return // the client has gone
+	}
 	data, err := readBlock(first)
 	if err != nil {
+		s.unhold()
 		fail(w, err)
 		return
 	}
@@ -1180,10 +1232,17 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 		w.WriteHeader(200)
 	}
 	for i := first; ; i++ {
-		if _, err := w.Write(slice(i, data)); err != nil || i == last {
+		_, werr := w.Write(slice(i, data))
+		data = nil
+		s.unhold() // the block is out of memory once it is sent: a client that is slow holds a place for as long as it takes the block, and not a slot of reads
+		if werr != nil || i == last {
 			return
 		}
+		if err := s.hold(r.Context(), false); err != nil {
+			panic(http.ErrAbortHandler)
+		}
 		if data, err = readBlock(i + 1); err != nil {
+			s.unhold()
 			// after the first piece an error cannot be a status: the connection is cut, and the reader, who gets less than it asked for, knows
 			panic(http.ErrAbortHandler)
 		}
