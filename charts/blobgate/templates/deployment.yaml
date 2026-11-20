@@ -61,6 +61,8 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ include "blobgate.secret" . }}, key: sealKey}}
             {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_METRICS_PORT" "value" .Values.config.metricsPort) | nindent 12 }}
             {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_THREADS" "value" .Values.config.threads) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_HELD_BLOCKS" "value" .Values.config.heldBlocks) | nindent 12 }}
+            {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_CLIENT_IDLE_SECONDS" "value" .Values.config.clientIdleSeconds) | nindent 12 }}
             {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_RESERVE_BYTES" "value" .Values.config.reserveBytes) | nindent 12 }}
             {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_REPAIR_SECONDS" "value" .Values.config.repairSeconds) | nindent 12 }}
             {{- include "blobgate.optEnv" (dict "name" "BLOBGATE_REPAIR_RETRY_SECONDS" "value" .Values.config.repairRetrySeconds) | nindent 12 }}

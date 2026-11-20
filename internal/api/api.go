@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -41,6 +42,8 @@ type Config struct {
 	Reserve      int64         // bytes kept free in a store (0: space.DefaultReserve)
 	MaxObject    int64         // the most bytes an object may hold; 0: no limit besides the room
 	MaxReads     int           // reads of blocks at once (0: 4): each holds one block in memory
+	MaxHeld      int           // blocks held in memory for clients at once, by reads being sent and by writes of more than one block or of no known size (0: 32)
+	ClientIdle   time.Duration // the longest a client may send or take no byte before its call is ended (0: 120 s)
 	UploadTTL    time.Duration // an upload older than this is swept (0: 24 h)
 	Now          func() time.Time
 	// CrashAt, if set, is called at the named points of a write or a delete (`put:after-uploads-row`, `put:after-block`, `part:after-block`, `complete:before-commit`, `commit:before`,
@@ -55,6 +58,7 @@ type Server struct {
 	Reg   *store.Registry
 	reads chan struct{}
 	seals chan struct{} // blocks being sealed: each holds one in memory
+	held  chan struct{} // blocks held in memory for a client (a read being sent, a write of many blocks)
 	log   *slog.Logger
 	book  statusBook
 }
@@ -67,6 +71,12 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 	if cfg.MaxReads <= 0 {
 		cfg.MaxReads = 4
 	}
+	if cfg.MaxHeld <= 0 {
+		cfg.MaxHeld = 32
+	}
+	if cfg.ClientIdle <= 0 {
+		cfg.ClientIdle = 120 * time.Second
+	}
 	if cfg.UploadTTL == 0 {
 		cfg.UploadTTL = 24 * time.Hour
 	}
@@ -76,7 +86,7 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), seals: make(chan struct{}, cfg.MaxReads), log: log}
+	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), seals: make(chan struct{}, cfg.MaxReads), held: make(chan struct{}, cfg.MaxHeld), log: log}
 }
 
 func (s *Server) now() int64 { return s.cfg.Now().Unix() }
@@ -185,17 +195,53 @@ type statusWriter struct {
 	http.ResponseWriter
 	code  int
 	bytes int64
+	rc    *http.ResponseController
+	idle  time.Duration
 }
+
+// idleBody is the body of a request that ends the call when no byte comes for `idle`: a client that has gone quiet holds nothing for long. The deadline moves at most once a second.
+type idleBody struct {
+	io.ReadCloser
+	rc   *http.ResponseController
+	idle time.Duration
+	last time.Time
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	if now := time.Now(); now.Sub(b.last) > time.Second {
+		_ = b.rc.SetReadDeadline(now.Add(b.idle)) // a writer that cannot do it (a test's recorder) has no deadline
+		b.last = now
+	}
+	return b.ReadCloser.Read(p)
+}
+
+// writePiece is the most one write to a client is, so that its deadline is for the next bytes and not for a whole block.
+const writePiece = 256 << 10
 
 func (w *statusWriter) WriteHeader(c int) { w.code = c; w.ResponseWriter.WriteHeader(c) }
 func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.code == 0 {
 		w.code = 200
 	}
-	n, err := w.ResponseWriter.Write(b)
-	w.bytes += int64(n)
-	return n, err
+	var done int
+	for len(b) > 0 {
+		if w.rc != nil {
+			_ = w.rc.SetWriteDeadline(time.Now().Add(w.idle))
+		}
+		piece := b[:min(len(b), writePiece)]
+		n, err := w.ResponseWriter.Write(piece)
+		done += n
+		w.bytes += int64(n)
+		if err != nil {
+			return done, err
+		}
+		b = b[len(piece):]
+	}
+	return done, nil
 }
+
+// Unwrap lets http.ResponseController reach the connection.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -206,7 +252,12 @@ func (w *statusWriter) Flush() {
 func (s *Server) logged(h http.Handler, door string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w}
+		rc := http.NewResponseController(w)
+		sw := &statusWriter{ResponseWriter: w, rc: rc, idle: s.cfg.ClientIdle}
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = &idleBody{ReadCloser: r.Body, rc: rc, idle: s.cfg.ClientIdle}
+		}
+		defer func() { _ = rc.SetReadDeadline(time.Time{}); _ = rc.SetWriteDeadline(time.Time{}) }()
 		h.ServeHTTP(sw, r)
 		route := ""
 		if door == "s3" {
