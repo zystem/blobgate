@@ -5,9 +5,10 @@ minor release; anything older gets none. A new patch release (0.2.1 after 0.2.0)
 
 | Release | Date | Status |
 |---|---|---|
-| **0.11.2** | 2026-11-20 | supported: the latest |
-| 0.11.1 | 2026-11-19 | not supported: update to 0.11.2 |
-| 0.11.0 | 2026-11-19 | not supported: update to 0.11.2 |
+| **0.11.3** | 2026-11-20 | supported: the latest |
+| 0.11.2 | 2026-11-20 | not supported: update to 0.11.3 |
+| 0.11.1 | 2026-11-19 | not supported: update to 0.11.3 |
+| 0.11.0 | 2026-11-19 | not supported: update to 0.11.3 |
 | 0.10.0 | 2026-11-18 | previous minor: High and Critical fixes only, **until 2026-12-19** |
 | 0.9.0 | 2026-11-18 | not supported (since 2026-11-19) |
 | 0.8.0 | 2026-11-18 | not supported: update |
