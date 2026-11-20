@@ -138,24 +138,24 @@ func TestCutInTheMiddleOfAnObject(t *testing.T) {
 		return ""
 	}
 	good, _ := os.ReadFile(third(0))
-	readAll := func() ([]byte, error, int64) {
+	readAll := func() ([]byte, int64, error) {
 		resp := r.open(context.Background(), "k/big")
 		defer resp.Body.Close()
 		d, err := io.ReadAll(resp.Body)
-		return d, err, resp.ContentLength
+		return d, resp.ContentLength, err
 	}
 	// node 1 alone is damaged: the whole object, no cut
 	if err := os.WriteFile(third(0), good[:len(good)/2], 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if d, err, _ := readAll(); err != nil || !bytes.Equal(d, body) {
+	if d, _, err := readAll(); err != nil || !bytes.Equal(d, body) {
 		t.Fatalf("with one good copy: %v, %d bytes", err, len(d))
 	}
 	// both are damaged: the first two blocks come, then the cut
 	if err := os.WriteFile(third(1), good[:len(good)/3], 0o644); err != nil {
 		t.Fatal(err)
 	}
-	d, err, cl := readAll()
+	d, cl, err := readAll()
 	if err == nil {
 		t.Fatalf("a short body of %d bytes (length said %d) ended as a success", len(d), cl)
 	}
