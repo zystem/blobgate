@@ -46,7 +46,7 @@ replaced by changing the file and restarting; nothing is rebuilt.
 | `BLOBGATE_REPAIR_SECONDS` | `60` | How often the repair queue and the sweep are worked. |
 | `BLOBGATE_REPAIR_RETRY_SECONDS` | `30` | The first pause after a repair that failed; it doubles up to an hour. |
 | `BLOBGATE_CHECK_SECONDS` | `600` | How often a slice (200 objects) of the inventory is checked against the nodes. |
-| `BLOBGATE_DEEP_CHECK` | `0` | `1`: the check reads the blocks and compares their SHA-256, not only their size. Reads a lot. Without it, a copy that is damaged with its size kept is found only when a read meets it (the read then queues the repair) or never, if the node that holds it is not the first one asked. |
+| `BLOBGATE_DEEP_CHECK` | `0` | `1`: the check reads the blocks and compares their SHA-256, not only their size. Reads a lot. Without it, a copy that is damaged with its size kept is found only when a read meets it (the read then queues the repair, also for a copy that is missing) or never, if the node that holds it is not the first one asked. |
 | `BLOBGATE_DEEP_CHECK_BYTES_PER_SECOND` | `0` (no limit) | The most the deep check reads in a second. |
 | `BLOBGATE_LEASE_SECONDS` | `120` | How long the replica that does the repair holds its lease without renewing it. When it dies, another takes over after this time. Shorter is quicker to take over and more sensitive to a pause of the database. It must be longer than `BLOBGATE_REPAIR_SECONDS`. |
 | `BLOBGATE_UPLOAD_TTL_SECONDS` | `86400` | An upload that has not ended after this is swept: its blocks are removed. |

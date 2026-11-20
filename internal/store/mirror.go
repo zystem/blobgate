@@ -282,10 +282,11 @@ func (m *Mirror) ReadBlock(ctx context.Context, rel, wantSHA string, size int64)
 	return data, err
 }
 
-// ReadBlockBad is ReadBlock that also says which nodes were met with a copy that is there and is not the block (the wrong bytes, or a wrong length): the caller queues a repair for them, so that damage
-// that a read walked round does not wait for the deep check (off by default) while the other copy is the only good one.
+// ReadBlockBad is ReadBlock that also says which nodes were met with a copy that is there and is not the block (the wrong bytes, or a wrong length), and, when another node gave the block, which nodes
+// did not have it at all (a disk that was lost): the caller queues a repair for them, so that damage or a loss that a read walked round does not wait for a check (the deep one is off by default) while the
+// other copy is the only good one.
 func (m *Mirror) ReadBlockBad(ctx context.Context, rel, wantSHA string, size int64) ([]byte, []*Node, error) {
-	var bad []*Node
+	var bad, lost []*Node
 	var failures []string
 	missing := 0
 	// the nodes that failed a moment ago come last: a dead node first in the list cost its whole timeout for every block
@@ -305,7 +306,7 @@ func (m *Mirror) ReadBlockBad(ctx context.Context, rel, wantSHA string, size int
 		switch {
 		case err == nil && sum(data) == wantSHA:
 			node.markUp()
-			return data, bad, nil
+			return data, append(bad, lost...), nil
 		case err == nil:
 			failures = append(failures, node.ID+": the block does not match its digest")
 			bad = append(bad, node)
@@ -316,6 +317,7 @@ func (m *Mirror) ReadBlockBad(ctx context.Context, rel, wantSHA string, size int
 			metrics.NodeError(m.Name, node.ID, "damaged")
 		case errors.Is(err, fs.ErrorObjectNotFound) || errors.Is(err, fs.ErrorDirNotFound):
 			missing++
+			lost = append(lost, node)
 		default:
 			failures = append(failures, node.ID+": "+err.Error())
 			node.markDown()
