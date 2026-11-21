@@ -7,6 +7,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ### Fixed
 * **The status page finds a local node whose directory cannot be read.** The local backend of rclone logs such a directory and lists it as empty, so the probe called the node `ok` (shown with mode 000). The probe now reads the directory of a local node itself; it is `dead` after three probes. Network backends were found before.
+* **A part of a multipart upload through the S3 door is held under the places of `BLOBGATE_HELD_BLOCKS` too.** The part is read whole into memory, and 24 clients that sent 6 MiB of a part of 8 and stopped held 200 MiB with no bound (the same test with the places: 33 MiB with 4 places, the others told `503 SlowDown` with `Retry-After`). Found while measuring the limit of 0.11.5 in a cluster, which covered reads and writes of one object but not the parts.
+* **A part whose client leaves, or is ended for being quiet, is answered `400 IncompleteBody`.** The handler answered with status 0 and `net/http` stopped it with a panic (`invalid WriteHeader code 0`, the connection was closed and a line was logged).
 
 ## [0.11.5] - 2026-11-20
 
