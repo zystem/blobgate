@@ -4,7 +4,9 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,6 +149,9 @@ func probeNode(ctx context.Context, n *store.Node, prev *probe) *probe {
 	defer cancel()
 	start := time.Now()
 	_, err := n.F.List(cctx, "")
+	if err == nil {
+		err = localRootReadable(n.F) // the local backend of rclone logs an unreadable directory and lists it as empty
+	}
 	p := &probe{seen: true, lat: time.Since(start), at: start}
 	if err != nil && !errors.Is(err, fs.ErrorDirNotFound) { // a root that is not made yet is a node that answers
 		p.fails = 1
@@ -168,6 +173,26 @@ func probeNode(ctx context.Context, n *store.Node, prev *probe) *probe {
 		}
 	}
 	return p
+}
+
+// localRootReadable says whether the directory of a node of the local backend can be read. rclone's local backend answers an empty listing for a directory it cannot read (mode 000, a disk that has
+// gone read-only is another case), so List alone calls the node well. A root that does not exist yet is fine (it is made by the first write). Other backends: nil, List is trusted.
+func localRootReadable(f fs.Fs) error {
+	if n := f.Name(); n != "local" && n != ":local" { // a connection string ':local:' names it ":local", a configured remote "local"
+		return nil
+	}
+	d, err := os.Open(f.Root())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if _, err := d.Readdirnames(1); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 // RunProbes probes every `every` until ctx ends; 0 or less: never (every node stays "unknown").

@@ -5,6 +5,9 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Fixed
+* **The status page finds a local node whose directory cannot be read.** The local backend of rclone logs such a directory and lists it as empty, so the probe called the node `ok` (shown with mode 000). The probe now reads the directory of a local node itself; it is `dead` after three probes. Network backends were found before.
+
 ## [0.11.5] - 2026-11-20
 
 ### Added
