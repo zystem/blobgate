@@ -12,6 +12,12 @@ ruby tools/sdk-check/ruby_check.rb http://127.0.0.1:18092 001 <secret key> main 
 cd /path/with/composer && php tools/sdk-check/php_check.php http://127.0.0.1:18092 001 <secret key> main   # composer require aws/aws-sdk-php (run where vendor/ is)
 cd tools/sdk-check/dotnet && dotnet run -- http://127.0.0.1:18092 001 <secret key> main                  # AWS SDK for .NET (net8.0)
 cd tools/sdk-check/rust && cargo run --release -- http://127.0.0.1:18092 001 <secret key> main          # AWS SDK for Rust
+docker build -t blobgate-cppsdk tools/sdk-check/cpp                                                     # AWS SDK for C++ (builds the SDK in Docker, about 15 minutes), then:
+docker run --rm --net=host -v "$PWD/tools/sdk-check/cpp:/src:ro" blobgate-cppsdk bash -c \
+  "cmake -S /src -B /tmp/b -DCMAKE_PREFIX_PATH=/opt/aws >/dev/null && cmake --build /tmp/b >/dev/null && HOME=/tmp /tmp/b/t 127.0.0.1:18093 001 <secret key>"   # the S3 port, bucket `demo`
+docker build -t blobgate-swiftsdk tools/sdk-check/swift                                                  # AWS SDK for Swift on Linux (Swift 6.1; takes about 10 minutes), then:
+docker run --rm --net=host -v "$PWD/tools/sdk-check/swift:/pkg" -w /pkg blobgate-swiftsdk bash -c \
+  "swift build -c release --scratch-path /tmp/b >/dev/null && /tmp/b/release/check http://127.0.0.1:18093 001 <secret key>"   # the S3 port, bucket `demo`
 ```
 
 Over TLS (`BLOBGATE_TLS_CERT_FILE` on the module, an `https://` endpoint): make each SDK trust the certificate. Python: `AWS_CA_BUNDLE=cert.pem SSL_CERT_FILE=cert.pem` (the second is for the presigned addresses, which the script fetches itself).
