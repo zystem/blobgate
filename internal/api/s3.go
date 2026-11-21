@@ -639,9 +639,22 @@ func (s *Server) s3Part(w http.ResponseWriter, r *http.Request, cw *s3w, call *a
 		s3Fail(w, r, 400, "EntityTooLarge", fmt.Sprintf("a part is at most %d bytes (8 MiB); set the size of the parts of the tool to 8 MiB or less (docs/s3.md)", BlockSize))
 		return
 	}
+	// the part is held whole while it is read from the client: a place of BLOBGATE_HELD_BLOCKS, as for the blocks of a read
+	if err := s.hold(r.Context(), true); err != nil {
+		if errors.Is(err, errBusy) {
+			w.Header().Set("Retry-After", "5")
+			s3Fail(w, r, 503, "SlowDown", "the module holds as many blocks for clients as it may (BLOBGATE_HELD_BLOCKS); try again")
+		}
+		return
+	}
+	defer s.unhold() // the place is kept until the part is on the nodes: it is in memory the whole time
 	data, err := io.ReadAll(io.LimitReader(body, BlockSize+1))
 	if err != nil {
-		cw.sendError(r, err)
+		if errors.Is(err, auth.ErrBadChunk) {
+			cw.sendError(r, err)
+		} else { // the client left, or was ended for being quiet: the core had not written anything yet to be told
+			s3Fail(w, r, 400, "IncompleteBody", "the part did not come whole: "+err.Error())
+		}
 		return
 	}
 	if len(data) > BlockSize {
