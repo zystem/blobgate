@@ -76,3 +76,25 @@ The same load on another host: a virtual machine with 2 cores and 1.7 GB, AlmaLi
 * The rates of the writes are scattered (80 to 98 MB/s plain), and one run (4 threads, sealed) wrote at 9.8 MB/s against about 70 to 90 in the others; this is taken for the disk, not for the limit, and nothing is concluded from the writes.
 * One run of each, two cores: the rates are not comparable with the table at the top, only the memory is.
 
+## Slow and quiet clients in a cluster
+
+Why: before 0.11.5 a client that took one byte of an object and stopped held a block of 8 MiB, with no bound (48 of them 385 MiB in a test inside the process). The limit `BLOBGATE_HELD_BLOCKS` (32 blocks, 256 MiB) and the idle time `BLOBGATE_CLIENT_IDLE_SECONDS` (120) are tested in the process (`TestMemoryOfSlowClients`, `TestMemoryOfQuietPartUploads`); this is the same in a cluster, with the limit of the chart, as `kubectl top pod` shows it (the memory of the whole container, which the kernel kills at the limit).
+
+**Run:** the chart `blobgate` 0.11.5 (2026-11-21) and 0.11.6 (2026-11-22), one replica, `resources.limits.memory` 512 Mi (the default of the chart), two local nodes on an `emptyDir`, an rqlite pod, a Talos cluster of six nodes at home, namespace made for the test and deleted after. The clients run in a pod of the same cluster (a client on the other side of `kubectl port-forward` hid the problem: the connection and `kubectl` took 4 to 23 MB of every object, so the module held little), with a receive buffer of 4 KiB, and hold their calls for 90 seconds. `kubectl top` is read every 15 seconds (it lags: Go does not give memory back at once).
+
+| Clients (all at once) | Answers | Memory of the pod | Restarts |
+|---|---|---|---|
+| 0.11.5: 60 readers that took 1 byte of 64 MiB and stopped | 32 `200`, 28 `503 busy` | 272 MiB (was 41) | 0 |
+| 0.11.5: 60 writers of no known length that sent 3 MiB and stopped | 32 taken, 28 `503 busy` | 118 MiB | 0 |
+| 0.11.6: 40 readers, then 40 such writers, then 40 parts through the S3 door (6 MiB of 8 sent, then quiet) | 32 readers `200`, 8 `503`; all 40 writers and all 40 parts `503` | 284 MiB at the peak, 270 MiB at the end | 0 |
+| 0.11.6: 40 parts alone | 32 held, 8 `503` | 278 MiB, 24 MiB after they were gone | 0 |
+| 0.11.6: 20 readers and 20 parts held for 150 s (more than the idle time) | 12 parts ended by the module after 120 s (`400`), 8 `503`, the 20 readers `200` | 278 MiB | 0 |
+
+What it shows:
+* The limit holds in a cluster: 32 blocks cost about 270 to 285 MiB, the process was not killed at 512 MiB in any run, and 60 such clients used to be enough to end it.
+* **A client that comes when every place is taken waits 30 seconds and is told `503 busy`** (`503 SlowDown` at the S3 door) with `Retry-After`: an ordinary read of a small object, sent in the middle of the third run, was answered so after 30 s. That is the price of the bound, and the reason for sizing `BLOBGATE_HELD_BLOCKS` and the memory limit above the clients that are really slow at the same time.
+* **The places are not shared out between kinds of call.** The readers that came first took all 32, and the writers and parts that came after got `503`. A flood of slow readers can keep writers out for as long as it holds the places (at most `BLOBGATE_CLIENT_IDLE_SECONDS` for a client that sends nothing).
+* The idle time ends a part that sends nothing for 120 seconds (12 `400`, `IncompleteBody`); the readers of that run were closed by the client after 150 s, so the module's cut of a quiet reader is shown by the test in the process, not here.
+
+**Not run:** several replicas under this load (each has its own places); a slow but moving client (the idle time counts a piece of 256 KiB); the memory of the process as RSS by the kernel (`kubectl top` is the working set of the container); a link with real loss; the limit of the chart with `BLOBGATE_HELD_BLOCKS` raised.
+
