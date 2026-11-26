@@ -23,8 +23,8 @@ blobgate keeps the data of build runs (artifacts, caches, and with `blobgate bac
 ## What is supported
 
 - **Scope**: the latest release (every fix of a security problem is made there) and the head of `main`. An earlier release does not get a fix: update to the latest.
-- **Duration**: a release is supported until the next release is made; the previous minor release (for example 0.2.x when 0.3.0 is out) is supported for 30 days after the new one, for fixes of High and Critical
-  problems only. The project is young (first released in November 2026) and has no long-term-support line. The list is in [docs/supported-versions.md](docs/supported-versions.md).
+- **Duration**: a release is supported until the next release is made. Older release lines get no fixes: there are no backports and no long-term-support line (since 0.12.0; before it, the previous minor release
+  was said to get High and Critical fixes for 30 days). The list is in [docs/supported-versions.md](docs/supported-versions.md).
 - **End of support** is said in the release notes of the release that replaces the one that ends.
 - How a release is verified: [docs/verifying-releases.md](docs/verifying-releases.md). The policies for dependencies, analysis and secrets: [docs/security-policies.md](docs/security-policies.md). How the project is run:
   [GOVERNANCE.md](GOVERNANCE.md).

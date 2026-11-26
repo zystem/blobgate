@@ -1,18 +1,19 @@
 # Supported versions
 
-The rule is in [SECURITY.md](../SECURITY.md), "What is supported": the **latest release** gets every security fix; the **previous minor release** gets fixes for High and Critical problems for 30 days after the new
-minor release; anything older gets none. A new patch release (0.2.1 after 0.2.0) replaces the one before it: update.
+The rule is in [SECURITY.md](../SECURITY.md), "What is supported": only the **latest release** is supported, and every security fix is made in a new release. Older releases get no fixes, whatever their number: update.
+Since 0.12.0; before it the previous minor release was said to get High and Critical fixes for 30 days, which ends with this change (0.10.0 had been given until 2026-12-19, and 0.11 gets no such window).
 
 | Release | Date | Status |
 |---|---|---|
-| **0.11.6** | 2026-11-21 | supported: the latest |
-| 0.11.5 | 2026-11-20 | not supported: update to 0.11.6 |
-| 0.11.4 | 2026-11-20 | not supported: update to 0.11.6 |
-| 0.11.3 | 2026-11-20 | not supported: update to 0.11.6 |
-| 0.11.2 | 2026-11-20 | not supported: update to 0.11.6 |
-| 0.11.1 | 2026-11-19 | not supported: update to 0.11.6 |
-| 0.11.0 | 2026-11-19 | not supported: update to 0.11.6 |
-| 0.10.0 | 2026-11-18 | previous minor: High and Critical fixes only, **until 2026-12-19** |
+| **0.12.0** | 2026-11-26 | supported: the latest |
+| 0.11.6 | 2026-11-21 | not supported: update to 0.12.0 |
+| 0.11.5 | 2026-11-20 | not supported: update to 0.12.0 |
+| 0.11.4 | 2026-11-20 | not supported: update to 0.12.0 |
+| 0.11.3 | 2026-11-20 | not supported: update to 0.12.0 |
+| 0.11.2 | 2026-11-20 | not supported: update to 0.12.0 |
+| 0.11.1 | 2026-11-19 | not supported: update to 0.12.0 |
+| 0.11.0 | 2026-11-19 | not supported: update to 0.12.0 |
+| 0.10.0 | 2026-11-18 | not supported: update to 0.12.0 |
 | 0.9.0 | 2026-11-18 | not supported (since 2026-11-19) |
 | 0.8.0 | 2026-11-18 | not supported: update |
 | 0.7.0 | 2026-11-17 | not supported: update |

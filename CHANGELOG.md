@@ -5,6 +5,10 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-26
+
+From this release on only the latest release is supported ([SECURITY.md](SECURITY.md)): the earlier releases, 0.11 and 0.10 among them, are no longer supported and the fixes below are not backported.
+
 ### Security
 * **An expired upload and its completion can no longer both win.** The sweep removed the blocks of an upload before it deleted the row, while a completion could publish the same generation: an object could be left whose blocks were deleted from every node. The sweep now claims the upload (deletes the row, in a transaction, only if still old enough), and a commit requires the row in its own transaction; of the two exactly one wins and a completion that lost is `404 no_such_upload`. A removal queued by the reconcile asks again who owns the directory when it is done. A commit that answered with a database error no longer removes the blocks unless the database says the generation is not the object's.
 * **S3: what the signature does not cover is not believed.** A header that decides what a call does (the source of a copy, the metadata directive, metadata, checksums, `Content-MD5`) that is not in `SignedHeaders` is `403 AccessDenied`; the XML bodies of DeleteObjects and CompleteMultipartUpload are checked against the signed digest (before, a body could be changed in flight and the delete was done); declared checksums (`x-amz-checksum-*`, in a header or a trailer) are checked, and one of an unknown algorithm is refused; the trailer of a signed stream is checked. A chunk of a streamed body is no longer held whole (up to 16 MiB) before it is checked.
