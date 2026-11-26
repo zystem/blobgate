@@ -5,6 +5,16 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Security
+* **An expired upload and its completion can no longer both win.** The sweep removed the blocks of an upload before it deleted the row, while a completion could publish the same generation: an object could be left whose blocks were deleted from every node. The sweep now claims the upload (deletes the row, in a transaction, only if still old enough), and a commit requires the row in its own transaction; of the two exactly one wins and a completion that lost is `404 no_such_upload`. A removal queued by the reconcile asks again who owns the directory when it is done. A commit that answered with a database error no longer removes the blocks unless the database says the generation is not the object's.
+* **S3: what the signature does not cover is not believed.** A header that decides what a call does (the source of a copy, the metadata directive, metadata, checksums, `Content-MD5`) that is not in `SignedHeaders` is `403 AccessDenied`; the XML bodies of DeleteObjects and CompleteMultipartUpload are checked against the signed digest (before, a body could be changed in flight and the delete was done); declared checksums (`x-amz-checksum-*`, in a header or a trailer) are checked, and one of an unknown algorithm is refused; the trailer of a signed stream is checked. A chunk of a streamed body is no longer held whole (up to 16 MiB) before it is checked.
+* **`If-Match` and `If-None-Match` are decided by the transaction that writes.** Two writers under the same condition could both pass and the second overwrote the first; now one is `412`. A weak tag (`W/"..."`) no longer matches `If-Match`. A completion of an upload honours them too.
+* **Encryption keys are checked.** A key id is written one way (`1`, not `01`); an update that would drop a key that blocks are sealed with, or change the text of a key under its id, is refused; two spellings of one id with different texts no longer leave the choice of the key to the order of a map.
+* **Repair tasks are settled by revision, and a copy that cannot be written down refuses the write.** A task replaced in the same second could be closed by the old one; an error of the queue was ignored while the write was acknowledged with fewer copies. New metric `blobgate_repair_enqueue_errors_total`.
+
+### Changed
+* **Slow readers no longer keep writers out of the places of `BLOBGATE_HELD_BLOCKS`.** Measured in a cluster with 0.11.6 (docs/benchmark.md): 40 slow readers that came first took all 32 places, and every writer and every part after them was told `503 busy` for as long as the readers lasted. A kind of call (reads; writes of many blocks and parts through the S3 door) now takes at most three quarters of the places (24 of 32); the last quarter is left for the other kind, and the total is still the limit of memory (32 blocks, 256 MiB). The price: with no writers about, slow readers alone can hold 24 blocks and not 32, so the 25th reader is told `503 busy` a little sooner; raise `BLOBGATE_HELD_BLOCKS` if that matters (and the memory limit with it). Test: `TestSlowReadersDoNotTakeThePlacesOfWriters`.
+
 ## [0.11.6] - 2026-11-21
 
 ### Fixed

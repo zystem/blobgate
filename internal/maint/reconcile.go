@@ -158,7 +158,7 @@ func (w *Worker) Reconcile(ctx context.Context, name string, apply bool, minAge 
 			rep.Strays = append(rep.Strays, s)
 			if apply && !s.Recent {
 				if _, err := w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, 'purgepath', ?, 0, 0, '') "+
-					"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purgepath', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", m.Name, dir, n.ID, w.now())); err == nil {
+					"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purgepath', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", m.Name, dir, n.ID, w.now())); err == nil {
 					rep.Queued++
 				}
 			}

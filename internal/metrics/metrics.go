@@ -28,6 +28,7 @@ var (
 	nodeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_node_errors_total", Help: "Operations that a node of a store failed, by store, node and operation."}, []string{"store", "node", "op"})
 	repairs    = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_repair_tasks_total", Help: "Repair tasks worked, by result (done, failed)."}, []string{"result"})
 	swept      = prometheus.NewCounter(prometheus.CounterOpts{Name: "blobgate_swept_uploads_total", Help: "Uploads that never ended whose blocks were removed."})
+	queueErrs  = prometheus.NewCounter(prometheus.CounterOpts{Name: "blobgate_repair_enqueue_errors_total", Help: "Repair tasks (a copy for a node that missed a write, a removal) that could not be written down in the database."})
 	checkMade  = prometheus.NewCounter(prometheus.CounterOpts{Name: "blobgate_check_tasks_total", Help: "Copy tasks made by the check of the inventory."})
 	refused    = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_refused_total", Help: "Writes refused, by reason (store_full)."}, []string{"reason"})
 	freeBytes  = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "blobgate_store_free_bytes", Help: "Room the store said it had at the last write (only stores that say)."}, []string{"store"})
@@ -40,7 +41,7 @@ var (
 )
 
 func init() {
-	Registry.MustRegister(requests, duration, bytesTotal, nodeErrors, repairs, swept, dedupObjs, dedupBytes, setsFreed, checkMade, refused, freeBytes, totalBytes, leaseHeld, lastBackup,
+	Registry.MustRegister(requests, duration, bytesTotal, nodeErrors, repairs, queueErrs, swept, dedupObjs, dedupBytes, setsFreed, checkMade, refused, freeBytes, totalBytes, leaseHeld, lastBackup,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
@@ -70,6 +71,9 @@ func NodeError(store, node, op string) { nodeErrors.WithLabelValues(store, node,
 func Repair(done bool) {
 	repairs.WithLabelValues(map[bool]string{true: "done", false: "failed"}[done]).Inc()
 }
+
+// QueueError records a repair task that could not be written down.
+func QueueError() { queueErrs.Inc() }
 
 // Swept records uploads that were swept.
 func Swept(n int) { swept.Add(float64(n)) }

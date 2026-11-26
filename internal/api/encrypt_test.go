@@ -131,19 +131,19 @@ func TestSealingSwitchedOnAndKeyRotation(t *testing.T) {
 	if idOf("k/sealed1") != 1 || idOf("k/sealed2") != 2 {
 		t.Fatal("the blocks are not sealed with the keys they should be")
 	}
-	// the first key is dropped: what it sealed cannot be read, and the answer says why
-	r.mirrorSealed(0, 2, map[string]string{"2": key2})
-	code, d := r.get("k/sealed1", 0, 10)
-	if code != 500 || !strings.Contains(string(d), "encrypted_no_key") || !strings.Contains(string(d), "key 1") {
-		t.Fatalf("a dropped key: %d %s", code, d)
+	// the first key is dropped, or its text changed under the same id: such an update is refused (it would make what the key sealed unreadable), and the store goes on as it was
+	for name, keys := range map[string]map[string]string{"dropped": {"2": key2}, "another text under the same id": {"1": "another-text-under-the-same-id", "2": key2}} {
+		code, d := r.admin("PUT", "/v1/admin/stores/main", map[string]any{"kind": "mirror", "default": true,
+			"nodes":      []any{map[string]any{"remote": ":local:" + r.nodes[0]}, map[string]any{"remote": ":local:" + r.nodes[1]}},
+			"encryption": map[string]any{"key_id": 2, "keys": keys}})
+		if code != 400 {
+			t.Fatalf("a key %s: %d %s, want 400", name, code, d)
+		}
 	}
-	if code, d := r.get("k/sealed2", 0, 4999); code != 206 || !bytes.Equal(d, sealed2) {
-		t.Fatal("what the other key sealed is no longer read")
-	}
-	// the same id with another text: the block does not open, and the answer says so, not wrong bytes
-	r.mirrorSealed(0, 2, map[string]string{"1": "another-text-under-the-same-id", "2": key2})
-	if code, d := r.get("k/sealed1", 0, 10); code != 500 || !strings.Contains(string(d), "decrypt_failed") {
-		t.Fatalf("a wrong key text: %d %s", code, d)
+	for name, want := range map[string][]byte{"k/sealed1": sealed1, "k/sealed2": sealed2} {
+		if code, d := r.get(name, 0, len(want)-1); code != 206 || !bytes.Equal(d, want) {
+			t.Fatalf("%s after the refused updates: %d", name, code)
+		}
 	}
 }
 
@@ -216,5 +216,52 @@ func TestAdminListShowsKeyIdsNotKeys(t *testing.T) {
 	if code, _ := r.admin("PUT", "/v1/admin/stores/bad", map[string]any{"kind": "mirror", "nodes": []any{map[string]any{"remote": ":local:" + r.nodes[0]}},
 		"encryption": map[string]any{"key_id": 1, "keys": map[string]string{"1": "short"}}}); code != 400 {
 		t.Fatal("a short key was accepted")
+	}
+}
+
+// Finding 4 of the review of 2026-11-22: the ids of keys are written in one way, a key is never changed under its id, and a key that blocks are sealed with is never dropped. A refused update
+// leaves the store as it was, and a rotation (a new id, the old one kept) reads the old and the new blocks.
+func TestKeyIdsAndRotationAreChecked(t *testing.T) {
+	r := newRig(t, nil)
+	r.mirrorSealed(0, 1, map[string]string{"1": key1})
+	old := pattern(30000)
+	if code, d := r.put("acme/old", old); code != 200 {
+		t.Fatalf("put: %d %s", code, d)
+	}
+	update := func(cur int, keys map[string]string) (int, string) {
+		code, d := r.admin("PUT", "/v1/admin/stores/main", map[string]any{"kind": "mirror", "default": true,
+			"nodes":      []any{map[string]any{"remote": ":local:" + r.nodes[0]}, map[string]any{"remote": ":local:" + r.nodes[1]}},
+			"encryption": map[string]any{"key_id": cur, "keys": keys}})
+		return code, string(d)
+	}
+	for name, c := range map[string]struct {
+		cur  int
+		keys map[string]string
+		want string
+	}{
+		"an alias of an id":      {1, map[string]string{"1": key1, "01": key2}, "leading zeros"},
+		"a plus sign":            {1, map[string]string{"1": key1, "+2": key2}, "no sign"},
+		"another text for an id": {1, map[string]string{"1": key2}, "another text"},
+		"a used key dropped":     {2, map[string]string{"2": key2}, "dropped"},
+	} {
+		if code, d := update(c.cur, c.keys); code != 400 || !strings.Contains(d, c.want) {
+			t.Errorf("%s: %d %s, want 400 with %q", name, code, d, c.want)
+		}
+	}
+	if code, got := r.get("acme/old", 0, 29999); code != 206 || !bytes.Equal(got, old) {
+		t.Fatalf("the store after the refused updates: %d", code)
+	}
+	// the rotation: a new id, the old one kept
+	if code, d := update(2, map[string]string{"1": key1, "2": key2}); code != 200 {
+		t.Fatalf("the rotation: %d %s", code, d)
+	}
+	fresh := pattern(20000)
+	if code, d := r.put("acme/new", fresh); code != 200 {
+		t.Fatalf("put after the rotation: %d %s", code, d)
+	}
+	for k, want := range map[string][]byte{"acme/old": old, "acme/new": fresh} {
+		if code, got := r.get(k, 0, len(want)-1); code != 206 || !bytes.Equal(got, want) {
+			t.Fatalf("read %s after the rotation: %d", k, code)
+		}
 	}
 }

@@ -41,7 +41,8 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 		problem(w, 413, "too_large", fmt.Sprintf("an object is at most %d bytes", s.cfg.MaxObject))
 		return
 	}
-	if !s.precondition(ctx, w, r, m, full) {
+	cond, ok := s.precondition(ctx, w, r, m, full)
+	if !ok {
 		return
 	}
 	if e := s.checkQuota(ctx, m, full, body.Size); e != nil { // the limit is of what the tenant holds as its objects, shared bytes or not
@@ -71,7 +72,8 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 		pj = []byte("{}")
 	}
 	s.at("link:before")
-	stmts := []rq.Stmt{s.releaseSet(m.Name, full, false)}
+	stmts := cond.guard(m.Name, full)
+	stmts = append(stmts, s.releaseSet(m.Name, full, false))
 	stmts = append(stmts, s.purgeTasks(m, full, "")...)
 	stmts = append(stmts,
 		rq.S("UPDATE storage_sets SET refs = refs + 1, zero_since = 0 WHERE store = ? AND cid = ?", m.Name, cid),
@@ -83,6 +85,10 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 			m.Name, full, body.Size, s.now(), om.ContentType, string(pj), m.Name, cid, m.Name, cid))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
 		var re *rq.Error
+		if errors.As(err, &re) && strings.Contains(re.Msg, "storage_guard.cond") {
+			problem(w, 412, "precondition_failed", errPreconditionFailed.Error())
+			return
+		}
 		if errors.As(err, &re) && strings.Contains(re.Msg, "NOT NULL") {
 			noContent()
 			return

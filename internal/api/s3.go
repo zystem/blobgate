@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"crypto/md5" // #nosec G501 -- the Content-MD5 a sender declares
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -166,6 +168,10 @@ func (x *s3w) sendError(r *http.Request, bad error) {
 		s3Fail(x.w, r, 403, "SignatureDoesNotMatch", "a chunk of the body is not signed right")
 		return
 	}
+	if errors.Is(bad, auth.ErrBadChecksum) {
+		s3Fail(x.w, r, 400, "BadDigest", bad.Error())
+		return
+	}
 	var e apiError
 	_ = json.Unmarshal(x.buf.Bytes(), &e)
 	st, code := s3Code(x.code, e.Error)
@@ -193,6 +199,39 @@ func (b *errBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// readSmallBody reads the body of a call whose body is a small document (the list of keys to delete, the list of parts to complete) and checks it against what the signature says it is: the digest the
+// client signed (when it signed one), a checksum it declared, the chunks of a streamed body. The answer is written here when the body is not that, and nothing is done with the bytes before then.
+func readSmallBody(w http.ResponseWriter, r *http.Request, call *auth.S3Call, body io.Reader, limit int64) ([]byte, bool) {
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	switch {
+	case errors.Is(err, auth.ErrBadChunk):
+		s3Fail(w, r, 403, "SignatureDoesNotMatch", "a chunk of the body is not signed right")
+		return nil, false
+	case errors.Is(err, auth.ErrBadChecksum):
+		s3Fail(w, r, 400, "BadDigest", err.Error())
+		return nil, false
+	case err != nil:
+		s3Fail(w, r, 400, "IncompleteBody", "the body did not come whole: "+err.Error())
+		return nil, false
+	case int64(len(raw)) > limit:
+		s3Fail(w, r, 400, "EntityTooLarge", "the body is larger than the service reads")
+		return nil, false
+	}
+	if d := call.Digest(); d != "" {
+		if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != d {
+			s3Fail(w, r, 400, "XAmzContentSHA256Mismatch", "the body is not the one x-amz-content-sha256 names")
+			return nil, false
+		}
+	}
+	if want := r.Header.Get("Content-MD5"); want != "" { // S3 requires it for a delete of many keys
+		if sum := md5.Sum(raw); base64.StdEncoding.EncodeToString(sum[:]) != want { // #nosec G401 -- the digest the sender declared, not a defence
+			s3Fail(w, r, 400, "BadDigest", "the body is not the one Content-MD5 names")
+			return nil, false
+		}
+	}
+	return raw, true
+}
+
 // s3 is every call of the door.
 func (s *Server) s3(w http.ResponseWriter, r *http.Request) {
 	call, err := auth.VerifySigV4(r, s.s3SecretOf, s.cfg.Now())
@@ -209,6 +248,10 @@ func (s *Server) s3(w http.ResponseWriter, r *http.Request) {
 		default:
 			s3Fail(w, r, 400, "AuthorizationHeaderMalformed", err.Error())
 		}
+		return
+	}
+	if err := call.CheckSigned(r); err != nil {
+		s3Fail(w, r, 403, "AccessDenied", err.Error()+": sign it (S3 refuses such a call too)")
 		return
 	}
 	tenant := call.AccessKey
@@ -239,6 +282,7 @@ func (s *Server) s3(w http.ResponseWriter, r *http.Request) {
 		}
 		body, clen = call.ChunkedBody(r.Body), n
 	}
+	body = call.CheckedBody(r, body) // a checksum the sender declared (a header, or the trailer of a streamed body) is checked when the body ends
 	eb := &errBody{r: body}
 	switch {
 	case bucket == "":
@@ -345,7 +389,7 @@ func (s *Server) s3Bucket(w http.ResponseWriter, r *http.Request, call *auth.S3C
 	case r.Method == http.MethodGet:
 		s.s3List(w, r, m, tenant, bucket, q)
 	case r.Method == http.MethodPost && q.Has("delete"):
-		s.s3Delete(w, r, tenant, bucket, body)
+		s.s3Delete(w, r, call, tenant, bucket, body)
 	default:
 		s3Fail(w, r, 405, "MethodNotAllowed", "HEAD, GET or POST ?delete on a bucket")
 	}
@@ -445,15 +489,18 @@ func (s *Server) s3List(w http.ResponseWriter, r *http.Request, m *store.Mirror,
 	s3Reply(w, 200, out)
 }
 
-func (s *Server) s3Delete(w http.ResponseWriter, r *http.Request, tenant, bucket string, body io.Reader) {
+func (s *Server) s3Delete(w http.ResponseWriter, r *http.Request, call *auth.S3Call, tenant, bucket string, body io.Reader) {
 	var in struct {
 		Quiet   bool `xml:"Quiet"`
 		Objects []struct {
 			Key string `xml:"Key"`
 		} `xml:"Object"`
 	}
-	raw, err := io.ReadAll(io.LimitReader(body, 4<<20))
-	if err != nil || xml.Unmarshal(raw, &in) != nil || len(in.Objects) == 0 || len(in.Objects) > maxDelete {
+	raw, ok := readSmallBody(w, r, call, body, 4<<20)
+	if !ok {
+		return
+	}
+	if xml.Unmarshal(raw, &in) != nil || len(in.Objects) == 0 || len(in.Objects) > maxDelete {
 		s3Fail(w, r, 400, "MalformedXML", fmt.Sprintf("the body is <Delete> with 1..%d <Object><Key>", maxDelete))
 		return
 	}
@@ -599,8 +646,11 @@ func (s *Server) s3Object(w http.ResponseWriter, r *http.Request, call *auth.S3C
 					ETag string `xml:"ETag"`
 				} `xml:"Part"`
 			}
-			raw, err := io.ReadAll(io.LimitReader(body, smallBody))
-			if err != nil || xml.Unmarshal(raw, &in) != nil || len(in.Parts) == 0 {
+			raw, ok := readSmallBody(w, r, call, body, smallBody)
+			if !ok {
+				return
+			}
+			if xml.Unmarshal(raw, &in) != nil || len(in.Parts) == 0 {
 				s3Fail(w, r, 400, "MalformedXML", "the body is <CompleteMultipartUpload> with <Part><PartNumber> and <ETag>")
 				return
 			}
@@ -640,17 +690,17 @@ func (s *Server) s3Part(w http.ResponseWriter, r *http.Request, cw *s3w, call *a
 		return
 	}
 	// the part is held whole while it is read from the client: a place of BLOBGATE_HELD_BLOCKS, as for the blocks of a read
-	if err := s.hold(r.Context(), true); err != nil {
+	if err := s.hold(r.Context(), heldWrite, true); err != nil {
 		if errors.Is(err, errBusy) {
 			w.Header().Set("Retry-After", "5")
 			s3Fail(w, r, 503, "SlowDown", "the module holds as many blocks for clients as it may (BLOBGATE_HELD_BLOCKS); try again")
 		}
 		return
 	}
-	defer s.unhold() // the place is kept until the part is on the nodes: it is in memory the whole time
+	defer s.unhold(heldWrite) // the place is kept until the part is on the nodes: it is in memory the whole time
 	data, err := io.ReadAll(io.LimitReader(body, BlockSize+1))
 	if err != nil {
-		if errors.Is(err, auth.ErrBadChunk) {
+		if errors.Is(err, auth.ErrBadChunk) || errors.Is(err, auth.ErrBadChecksum) {
 			cw.sendError(r, err)
 		} else { // the client left, or was ended for being quiet: the core had not written anything yet to be told
 			s3Fail(w, r, 400, "IncompleteBody", "the part did not come whole: "+err.Error())

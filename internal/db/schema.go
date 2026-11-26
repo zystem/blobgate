@@ -37,6 +37,9 @@ var ddl = []string{
 	// the limits of a tenant in a store (0: no limit); what a tenant holds is counted from storage_objects
 	`CREATE TABLE IF NOT EXISTS storage_quotas (
        store TEXT NOT NULL, tenant TEXT NOT NULL, max_bytes INTEGER NOT NULL DEFAULT 0, max_objects INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (store, tenant))`,
+	// a table that nothing is ever written to: a statement that must stop a transaction when a condition does not hold inserts a NULL into it (`INSERT INTO storage_guard (x) SELECT NULL WHERE <not ok>`),
+	// the NOT NULL fails and names the column, and rqlite rolls the whole transaction back (a commit of an object uses `upload` so that an upload the sweep has already claimed cannot become an object, and `cond` so that an If-Match or If-None-Match is decided by the transaction that writes)
+	`CREATE TABLE IF NOT EXISTS storage_guard (upload INTEGER NOT NULL, cond INTEGER NOT NULL)`,
 	// a job that only one replica of the module does at a time
 	`CREATE TABLE IF NOT EXISTS storage_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, until INTEGER NOT NULL)`,
 }
@@ -51,6 +54,7 @@ var columns = [][3]string{
 	{"storage_objects", "meta", "TEXT NOT NULL DEFAULT '{}'"},       // the metadata the writer gave (a JSON object of text)
 	{"storage_objects", "deleted_at", "INTEGER NOT NULL DEFAULT 0"}, // when it was put in the trash (soft delete); 0: it is there
 	{"storage_objects", "cid", "TEXT NOT NULL DEFAULT ''"},          // the set of blocks it points to (deduplication); '': its own blocks, in `generation`
+	{"storage_repair", "rev", "INTEGER NOT NULL DEFAULT 1"},         // the number of the last replacement of the task; a worker that settles a task names the revision it worked, so that a task that was replaced meanwhile (in the same second too) is not taken for the old one
 	{"storage_uploads", "content_type", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_uploads", "meta", "TEXT NOT NULL DEFAULT '{}'"},
 	{"storage_uploads", "one_call", "INTEGER NOT NULL DEFAULT 0"},  // 1: the row of a write in one call, which the sweep looks at while it goes on; 0: an upload in parts (the list of uploads of S3 has those only)

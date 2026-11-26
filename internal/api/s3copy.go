@@ -239,9 +239,9 @@ func copyConditions(w http.ResponseWriter, r *http.Request, o *objectRow) bool {
 	h := r.Header
 	failed := ""
 	switch {
-	case h.Get("X-Amz-Copy-Source-If-Match") != "" && !etagMatches(h.Get("X-Amz-Copy-Source-If-Match"), o.etag()) && h.Get("X-Amz-Copy-Source-If-Match") != "*":
+	case h.Get("X-Amz-Copy-Source-If-Match") != "" && !etagMatches(h.Get("X-Amz-Copy-Source-If-Match"), o.etag(), true) && h.Get("X-Amz-Copy-Source-If-Match") != "*":
 		failed = "if-match"
-	case h.Get("X-Amz-Copy-Source-If-None-Match") != "" && (h.Get("X-Amz-Copy-Source-If-None-Match") == "*" || etagMatches(h.Get("X-Amz-Copy-Source-If-None-Match"), o.etag())):
+	case h.Get("X-Amz-Copy-Source-If-None-Match") != "" && (h.Get("X-Amz-Copy-Source-If-None-Match") == "*" || etagMatches(h.Get("X-Amz-Copy-Source-If-None-Match"), o.etag(), false)):
 		failed = "if-none-match"
 	}
 	if t, err := http.ParseTime(h.Get("X-Amz-Copy-Source-If-Unmodified-Since")); err == nil && time.Unix(o.written, 0).After(t) {
