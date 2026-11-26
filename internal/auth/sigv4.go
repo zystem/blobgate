@@ -3,7 +3,7 @@ package auth
 import (
 	"bufio"
 	"crypto/hmac"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- x-amz-checksum-sha1 of S3: a checksum a sender declares, not a defence
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"

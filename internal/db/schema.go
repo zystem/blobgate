@@ -37,7 +37,7 @@ var ddl = []string{
 	// the limits of a tenant in a store (0: no limit); what a tenant holds is counted from storage_objects
 	`CREATE TABLE IF NOT EXISTS storage_quotas (
        store TEXT NOT NULL, tenant TEXT NOT NULL, max_bytes INTEGER NOT NULL DEFAULT 0, max_objects INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (store, tenant))`,
-	// a table that nothing is ever written to: a statement that must stop a transaction when a condition does not hold inserts a NULL into it (`INSERT INTO storage_guard (x) SELECT NULL WHERE <not ok>`),
+	// a table that nothing is ever written to: a statement that must stop a transaction when a condition does not hold inserts a NULL into it (`INSERT INTO storage_guard (upload, cond) SELECT NULL, 1 WHERE <not ok>`),
 	// the NOT NULL fails and names the column, and rqlite rolls the whole transaction back (a commit of an object uses `upload` so that an upload the sweep has already claimed cannot become an object, and `cond` so that an If-Match or If-None-Match is decided by the transaction that writes)
 	`CREATE TABLE IF NOT EXISTS storage_guard (upload INTEGER NOT NULL, cond INTEGER NOT NULL)`,
 	// a job that only one replica of the module does at a time
