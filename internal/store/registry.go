@@ -228,8 +228,8 @@ func (r *Registry) Load(ctx context.Context, name string) (*Mirror, error) {
 	if row == nil {
 		return nil, ErrNoSuchStore
 	}
-	rows := [][]any{{row.config, row.secret, float64(row.updated)}}
-	updated := rq.Int(rows[0][2])
+	rows := [][]any{{row.config, row.secret}}
+	updated := row.updated
 	r.mu.Lock()
 	c, ok := r.cache[want]
 	r.mu.Unlock()

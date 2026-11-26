@@ -19,6 +19,9 @@
 
 ## Cannot expect
 
+- **Protection of a weak secret.** The seal key and the keys of sealed stores are made into AES keys with one SHA-256, with no password stretching, and only their length is checked. Use random text (`openssl rand -hex 32`).
+- **A limit on failed calls.** Refused calls are not counted per caller or slowed down; where that is wanted, the proxy or the ingress in front does it.
+- **Erasure of secrets from memory.** Go keeps text in memory that the program cannot overwrite; no copy of a secret is promised to be gone.
 - **Protection from a compromised host or process.** Whoever can read the memory of the module has the secrets of the tenants, the admin token, the seal key and the keys of the stores.
 - **Protection from whoever holds the admin token**: the admin API can register a store that sends the data anywhere, and can read what the module reads. Keep it to the operator.
 - **Confidentiality from the nodes, unless the store seals its blocks.** A node holds the blocks as they are (and the names of the keys of the objects, escaped but readable); a store with `encryption` holds sealed bytes,

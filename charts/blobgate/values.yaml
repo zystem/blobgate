@@ -31,6 +31,7 @@ config:
   metricsPort: 0         # a port with /metrics and no token, for a scraper inside the cluster; 0: none
   threads: 0             # reads from the nodes and sealed writes at once (4)
   heldBlocks: 0          # blocks held in memory for clients at once (32, 8 MiB each); reads and writes may each take three quarters of them
+  heldBlocksPerTenant: 0 # the most of them one tenant may take (three quarters with more than one tenant)
   clientIdleSeconds: 0   # a client with no byte moving for this long is ended (120)
   reserveBytes: 0        # room kept free in a store (256 MiB)
   repairSeconds: 0       # 60

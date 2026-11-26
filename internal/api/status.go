@@ -369,7 +369,7 @@ func (s *Server) statusPublic(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err := s.statusSnapshot(r.Context(), false)
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	noStore(w)
@@ -388,7 +388,7 @@ func (s *Server) statusAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err := s.statusSnapshot(r.Context(), true)
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	noStore(w)

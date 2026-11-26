@@ -17,7 +17,7 @@ It answers `{"name":"main","checked":true}` as for any store (not run as a comma
 
 | Setting | Meaning |
 |---|---|
-| `encryption.keys` | Every key an object was ever sealed with: id (a number from 1, written in decimal with no sign and no leading zeros) to text (16..256 printable characters). The key is made of the text; it is kept sealed in the database with the module's own key, and never shown (the list shows the id only). |
+| `encryption.keys` | Every key an object was ever sealed with: id (a number from 1, written in decimal with no sign and no leading zeros) to text (16..256 printable characters). The key is made of the text with one hash, so the text must be random (`openssl rand -hex 32`), not a passphrase; it is kept sealed in the database with the module's own key, and never shown (the list shows the id only). |
 | `encryption.key_id` | The key new blocks are sealed with. Omit `encryption.key_id` (and keep `keys`) to stop sealing new blocks and still read the sealed ones. |
 
 ## What it does and does not

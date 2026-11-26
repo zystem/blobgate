@@ -43,7 +43,7 @@ func (s *Server) s3ListUploads(w http.ResponseWriter, r *http.Request, m *store.
 	}
 	rows, err := s.DB.QueryWeak(r.Context(), rq.S(sql+" ORDER BY key, upload LIMIT ?", append(args, maxUploadsRead)...))
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	enc := func(x string) string { return x }

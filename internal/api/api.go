@@ -37,15 +37,16 @@ const (
 
 // Config is what the server needs.
 type Config struct {
-	ShardSecrets map[string]string // shard -> the secret its calls are signed with
-	AdminToken   string
-	Reserve      int64         // bytes kept free in a store (0: space.DefaultReserve)
-	MaxObject    int64         // the most bytes an object may hold; 0: no limit besides the room
-	MaxReads     int           // reads of blocks at once (0: 4): each holds one block in memory
-	MaxHeld      int           // blocks held in memory for clients at once, by reads being sent and by writes of more than one block or of no known size (0: 32)
-	ClientIdle   time.Duration // the longest a client may send or take no byte before its call is ended (0: 120 s)
-	UploadTTL    time.Duration // an upload older than this is swept (0: 24 h)
-	Now          func() time.Time
+	ShardSecrets  map[string]string // shard -> the secret its calls are signed with
+	AdminToken    string
+	Reserve       int64         // bytes kept free in a store (0: space.DefaultReserve)
+	MaxObject     int64         // the most bytes an object may hold; 0: no limit besides the room
+	MaxReads      int           // reads of blocks at once (0: 4): each holds one block in memory
+	MaxHeld       int           // blocks held in memory for clients at once, by reads being sent and by writes of more than one block or of no known size (0: 32)
+	MaxHeldTenant int           // the most of those places one tenant may take; 0: three quarters of them when there is more than one tenant, else no limit of its own
+	ClientIdle    time.Duration // the longest a client may send or take no byte before its call is ended (0: 120 s)
+	UploadTTL     time.Duration // an upload older than this is swept (0: 24 h)
+	Now           func() time.Time
 	// CrashAt, if set, is called at the named points of a write or a delete (`put:after-uploads-row`, `put:after-block`, `part:after-block`, `complete:before-commit`, `commit:before`,
 	// `commit:after-tx`, `delete:after-tx`, `delete:after-trash`, `abort:after-purge`). The tests make it end the request there, as a process that dies would; nothing sets it in the program.
 	CrashAt func(point string)
@@ -60,8 +61,10 @@ type Server struct {
 	seals    chan struct{}    // blocks being sealed: each holds one in memory
 	held     chan struct{}    // blocks held in memory for a client (a read being sent, a write of many blocks)
 	heldKind [2]chan struct{} // the same by kind (heldRead, heldWrite): each may take three quarters of the places
-	log      *slog.Logger
-	book     statusBook
+	// the places a tenant may take, when it has a limit of its own: made at start for the tenants of the settings, never written to after
+	heldTenant map[string]chan struct{}
+	log        *slog.Logger
+	book       statusBook
 }
 
 // New makes a server.
@@ -88,8 +91,19 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 		log = slog.Default()
 	}
 	kindMax := max(cfg.MaxHeld-cfg.MaxHeld/4, 1)
+	// with more than one tenant, one of them cannot take every place: by default the last quarter is for the others
+	perTenant := cfg.MaxHeldTenant
+	if perTenant <= 0 && len(cfg.ShardSecrets) > 1 {
+		perTenant = kindMax
+	}
+	heldTenant := map[string]chan struct{}{}
+	if perTenant > 0 && perTenant < cfg.MaxHeld {
+		for t := range cfg.ShardSecrets {
+			heldTenant[t] = make(chan struct{}, perTenant)
+		}
+	}
 	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), seals: make(chan struct{}, cfg.MaxReads), held: make(chan struct{}, cfg.MaxHeld),
-		heldKind: [2]chan struct{}{make(chan struct{}, kindMax), make(chan struct{}, kindMax)}, log: log}
+		heldKind: [2]chan struct{}{make(chan struct{}, kindMax), make(chan struct{}, kindMax)}, heldTenant: heldTenant, log: log}
 }
 
 func (s *Server) now() int64 { return s.cfg.Now().Unix() }
@@ -119,20 +133,22 @@ func problem(w http.ResponseWriter, code int, kind, detail string) {
 }
 
 // fail answers for an error of the database or of the nodes.
-func fail(w http.ResponseWriter, err error) {
+func (s *Server) fail(w http.ResponseWriter, err error) {
 	var un *store.ErrUnavailable
 	var nokey *store.ErrNoKey
 	switch {
 	case errors.Is(err, errPreconditionFailed):
-		problem(w, 412, "precondition_failed", err.Error())
+		problem(w, 412, "precondition_failed", errPreconditionFailed.Error())
+	case errors.Is(err, errQuota):
+		problem(w, 507, "quota_exceeded", errQuota.Error())
 	case errors.Is(err, errUploadGone):
-		problem(w, 404, "no_such_upload", err.Error())
+		problem(w, 404, "no_such_upload", errUploadGone.Error())
 	case rq.IsDB(err):
-		problem(w, 503, "database_unavailable", err.Error())
+		problem(w, 503, "database_unavailable", s.hide("the database did not answer", err))
 	case errors.Is(err, store.ErrNotFound):
 		problem(w, 404, "no_such_object", "no such object")
 	case errors.As(err, &un):
-		problem(w, 503, "unavailable", un.Detail)
+		problem(w, 503, "unavailable", s.hide("not enough nodes of the store answered", err))
 	case errors.Is(err, store.ErrNotConfigured):
 		problem(w, 409, "not_configured", "the module has no store yet")
 	case errors.Is(err, store.ErrNoSuchStore):
@@ -140,13 +156,13 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.As(err, &nokey):
 		problem(w, 500, "encrypted_no_key", nokey.Error())
 	case errors.Is(err, store.ErrDecrypt):
-		problem(w, 500, "decrypt_failed", err.Error())
+		problem(w, 500, "decrypt_failed", s.hide(store.ErrDecrypt.Error(), err))
 	case errors.Is(err, store.ErrNewerLayout):
 		problem(w, 500, "newer_layout", "the store was written by a newer version of this program: update it (docs/compat.md)")
 	case errors.Is(err, store.ErrUnreadable):
 		problem(w, 500, "unreadable", "the settings of the store could not be read (the seal key is not the one they were sealed with)")
 	default:
-		problem(w, 502, "store_error", err.Error())
+		problem(w, 502, "store_error", s.hide("the store failed", err))
 	}
 }
 
@@ -325,7 +341,8 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	if err := s.DB.Ready(r.Context()); err != nil {
-		writeJSON(w, 503, map[string]any{"status": "not_ready", "checks": map[string]string{"database": err.Error()}})
+		s.log.Warn("not ready", "error", redact(err.Error()))
+		writeJSON(w, 503, map[string]any{"status": "not_ready", "checks": map[string]string{"database": "unreachable"}})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "ready", "checks": map[string]string{"database": "ok"}})
@@ -337,7 +354,7 @@ func (s *Server) loadStore(w http.ResponseWriter, ctx context.Context, name stri
 	}
 	m, err := s.Reg.Load(ctx, name)
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return nil
 	}
 	return m

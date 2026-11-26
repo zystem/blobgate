@@ -96,7 +96,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, m *store.Mirror, t
 		args = append(args, asked)
 		rows, err := s.DB.QueryWeak(ctx, rq.S(sql, args...))
 		if err != nil {
-			fail(w, err)
+			s.fail(w, err)
 			return
 		}
 		restart := false
@@ -144,12 +144,12 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, m *store.Mirror, t
 func (s *Server) usage(w http.ResponseWriter, r *http.Request, m *store.Mirror, tenant string) {
 	u, err := s.tenantUsage(r.Context(), m.Name, tenant)
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	q, err := s.quotaOf(r.Context(), m.Name, tenant)
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"tenant": tenant, "store": m.Name, "objects": u.objects, "bytes": u.bytes, "trash_objects": u.trashObjects, "trash_bytes": u.trashBytes,

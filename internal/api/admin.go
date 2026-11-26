@@ -102,7 +102,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		}
 		list, err := s.Reg.List(ctx)
 		if err != nil {
-			fail(w, err)
+			s.fail(w, err)
 			return
 		}
 		items := []map[string]any{}
@@ -149,7 +149,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 				problem(w, map[bool]int{true: 404, false: 409}[err == store.ErrNoSuchStore], err.Error(), "the store is not ready: "+err.Error())
 				return
 			}
-			fail(w, err)
+			s.fail(w, err)
 			return
 		}
 		if bad := m.Check(ctx); bad != "" {
@@ -181,7 +181,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		}
 		rep, err := maint.New(maint.Config{Now: s.cfg.Now}, s.DB, s.Reg).Reconcile(ctx, name, r.URL.Query().Has("apply"), minAge)
 		if err != nil {
-			fail(w, err)
+			s.fail(w, err)
 			return
 		}
 		writeJSON(w, 200, rep)
@@ -193,7 +193,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		}
 		ok, err := s.Reg.SetDefault(ctx, name)
 		if err != nil {
-			fail(w, err)
+			s.fail(w, err)
 			return
 		}
 		if !ok {
@@ -210,7 +210,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		why, err := s.Reg.Forget(ctx, name, r.URL.Query().Has("force"))
 		if err != nil {
-			fail(w, err)
+			s.fail(w, err)
 			return
 		}
 		if why != "" {
@@ -260,7 +260,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	why, err := s.Reg.Save(ctx, name, cfg, sec, body.Default, s.now())
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	if why != "" {

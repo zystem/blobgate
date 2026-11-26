@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	smithy "github.com/aws/smithy-go"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -235,11 +238,17 @@ func TestS3Refusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a wrong secret, an access key that is not a tenant
+	var said []string
 	for name, c := range map[string]*s3.Client{"secret": r.s3Client("001", "not-the-secret"), "key": r.s3Client("nobody", secret1)} {
 		_, err := c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String("main"), Key: aws.String("k")})
-		if err == nil || !(strings.Contains(err.Error(), "SignatureDoesNotMatch") || strings.Contains(err.Error(), "InvalidAccessKeyId")) {
+		var api smithy.APIError
+		if !errors.As(err, &api) || api.ErrorCode() != "SignatureDoesNotMatch" {
 			t.Fatalf("%s: %v", name, err)
 		}
+		said = append(said, api.ErrorMessage())
+	}
+	if said[0] != said[1] {
+		t.Fatalf("a wrong secret and a key that is no tenant are told apart: %q", said)
 	}
 	// another tenant does not see the key
 	other := r.s3Client("other", "the-secret-of-the-other-tenant")

@@ -5,6 +5,22 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Security
+* **An error no longer tells a caller about the inside.** The detail of a failure of the database or of a node carried its text: hosts, paths, node ids, the address of rqlite; `/readyz`, which asks for no token, did too. A caller now gets what kind of failure it was and `(ref <id>)`; the log line with that `ref` has the whole text, with the passwords and tokens of URLs taken out. A `507 store_full` no longer names the nodes.
+* **S3: one answer for a wrong signature and for an access key that is no tenant** (`403 SignatureDoesNotMatch`, and the same work is done for both). `InvalidAccessKeyId` is not answered any more.
+
+### Added
+* `BLOBGATE_HELD_BLOCKS_PER_TENANT` (chart `config.heldBlocksPerTenant`). With more than one tenant, one of them now takes at most three quarters of the places by default.
+* Metrics `blobgate_held_blocks`, `blobgate_held_wait_seconds`, `blobgate_staged_bytes`; `blobgate_refused_total` counts `busy`.
+* The report of a reconcile has `strays_total`.
+
+### Changed
+* **Quotas are hard limits.** They are decided by the transaction that records the object or the part, so writers at once cannot pass them together; the parts of uploads that have not ended count (a part over the limit is `507` when it is sent, and no longer only the completion), and so does an object that comes back from the trash. The table `storage_guard` gains a column `quota`.
+* A cell of the database that is not what its column is (a text where a number belongs) is now an error (`503`), not a silent zero.
+* A reconcile asks the database about 500 directories at a time and no longer keeps the listing of the nodes and the whole inventory in memory; its report lists at most 1000 strays; `apply` still queues all that are old enough. New indexes by generation are made at start.
+* Integers from rqlite are no longer read through a floating-point number, which loses the last digits above 2^53.
+* The documents say that the secrets must be random text: there is no password stretching.
+
 ## [0.12.0] - 2026-11-26
 
 From this release on only the latest release is supported ([SECURITY.md](SECURITY.md)): the earlier releases, 0.11 and 0.10 among them, are no longer supported and the fixes below are not backported.

@@ -314,11 +314,15 @@ func TestQuotas(t *testing.T) {
 		t.Fatal("room freed by a delete")
 	}
 	// multipart: the size when it is completed (room for one more object, not for the bytes)
-	r.admin("PUT", "/v1/admin/quotas/main/001", map[string]any{"max_bytes": 10000, "max_objects": 10})
+	r.admin("PUT", "/v1/admin/quotas/main/001", map[string]any{"max_bytes": 100000, "max_objects": 10})
 	_, bd, _ := r.core("POST", "/v1/stores/main/objects/big", "uploads", nil, nil)
 	id := between(string(bd), `"upload_id":"`, `"`)
 	p1 := pattern(9000)
 	_, pd, _ := r.core("PUT", "/v1/stores/main/objects/big", "upload="+id+"&part=1", map[string]string{"X-Content-SHA256": sha(p1)}, p1)
+	r.admin("PUT", "/v1/admin/quotas/main/001", map[string]any{"max_bytes": 10000, "max_objects": 10}) // the limit was lowered while the upload went on
+	if code, d, _ := r.core("PUT", "/v1/stores/main/objects/big", "upload="+id+"&part=2", map[string]string{"X-Content-SHA256": sha(p1)}, p1); code != 507 {
+		t.Fatalf("a part over the limit: %d %s", code, d)
+	}
 	if code, d, _ := r.core("POST", "/v1/stores/main/objects/big", "upload="+id, nil, []byte(fmt.Sprintf(`{"parts":[[1,"%s"]]}`, between(string(pd), `"etag":"`, `"`)))); code != 507 {
 		t.Fatalf("complete over the limit: %d %s", code, d)
 	}

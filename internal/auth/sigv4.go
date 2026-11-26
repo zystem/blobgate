@@ -25,6 +25,9 @@ import (
 // The S3 door. A call is signed as AWS Signature Version 4 (the header form or the query form of a presigned address); the access key is the name of a tenant, and the secret key is made from the
 // secret of that tenant, so that nothing new is kept: `blobgate s3-key <tenant>` prints the pair.
 
+// noSecret stands in for the secret of an access key that is no tenant; what is signed with it is refused all the same.
+const noSecret = "blobgate/s3/no-such-tenant" // #nosec G101 -- not a credential: nothing is accepted that is signed with it
+
 // S3Secret is the secret key of a tenant for the S3 door: it is not the secret that signs the tokens of the core, and it does not give it away.
 func S3Secret(tenantSecret string) string { return mac(tenantSecret, "blobgate/s3/v1") }
 
@@ -195,9 +198,10 @@ func VerifySigV4(r *http.Request, secretOf func(accessKey string) (string, bool)
 	} else if d := now.Sub(t); d > maxSkew || -d > maxSkew {
 		return nil, ErrExpired
 	}
-	secret, ok := secretOf(cp[0])
-	if !ok {
-		return nil, ErrUnknownKey
+	// a key that is no tenant is worked through like any other, with a secret that is nobody's, and refused at the end: the time of the answer does not say which tenants there are
+	secret, known := secretOf(cp[0])
+	if !known {
+		secret = noSecret
 	}
 	signed := strings.Split(signedList, ";")
 	hasHost := false
@@ -227,7 +231,11 @@ func VerifySigV4(r *http.Request, secretOf func(accessKey string) (string, bool)
 	sts := "AWS4-HMAC-SHA256\n" + stamp + "\n" + scope + "\n" + hexSHA(canon)
 	key := hmacRaw(hmacRaw(hmacRaw(hmacRaw([]byte("AWS4"+secret), cp[1]), cp[2]), "s3"), "aws4_request")
 	want := hex.EncodeToString(hmacRaw(key, sts))
-	if subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(sig))) != 1 {
+	right := subtle.ConstantTimeCompare([]byte(want), []byte(strings.ToLower(sig))) == 1
+	if !known {
+		return nil, ErrUnknownKey
+	}
+	if !right {
 		return nil, ErrBadSig
 	}
 	signedSet := make(map[string]bool, len(signed))
