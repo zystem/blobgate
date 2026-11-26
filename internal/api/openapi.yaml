@@ -11,7 +11,7 @@ info:
     * a step's shim, on `BLOBGATE_SHIM_PORT` (18091), with a grant made by the core (`shimGrant`): only `PUT` of a part and `GET` of a range.
 
     The tenant is part of every key in the store: the object `acme/s1/app.txt` of tenant `001` lies as `001/acme/s1/app.txt`.
-    Every error is `{"error": "<code>", "detail": "<words>"}`.
+    Every error is `{"error": "<code>", "detail": "<words>"}`. The detail of a failure of the database or of a node says what kind of failure it was and ends with `(ref <id>)`: the log line with that `ref` has the whole text, which is not given to the caller.
     The token strings are fixed byte for byte, see the schemes.
 servers:
   - url: http://localhost:18090
@@ -240,7 +240,7 @@ paths:
         "503": {$ref: "#/components/responses/Unavailable"}
   /v1/stores/{store}/usage:
     get:
-      summary: "what the tenant holds in the store: {objects, bytes, trash_objects, trash_bytes, quota: {max_bytes, max_objects}} (0 is no limit); the trash does not count against the quota"
+      summary: "what the tenant holds in the store: {objects, bytes, trash_objects, trash_bytes, quota: {max_bytes, max_objects}} (0 is no limit); the trash does not count against the quota, the parts of uploads that have not ended do (they are not in these figures)"
       security: [{coreToken: []}]
       parameters:
         - {$ref: "#/components/parameters/tenant"}
@@ -409,7 +409,7 @@ paths:
         - {name: apply, in: query, allowEmptyValue: true, schema: {type: string}}
         - {name: min_age, in: query, schema: {type: integer, minimum: 0}}
       responses:
-        "200": {description: "{store, nodes, files, expected, strays: [{node, dir, files, bytes, newest, recent}], unknown_files, queued}"}
+        "200": {description: "{store, nodes, files, expected, strays: [{node, dir, files, bytes, newest, recent}], strays_total, unknown_files, queued}; strays lists at most 1000, strays_total counts all of them, and with apply every old enough one is queued"}
         "404": {description: no_such_store}
   /v1/admin/quotas:
     get:
@@ -423,7 +423,7 @@ paths:
       - {name: store, in: path, required: true, schema: {type: string}}
       - {name: tenant, in: path, required: true, schema: {type: string}}
     put:
-      summary: "set the limit; 0 is no limit for that part. A write that would pass it gets 507 quota_exceeded; what is held already is not touched"
+      summary: "set the limit; 0 is no limit for that part. A write, a part or a restore that would pass it gets 507 quota_exceeded (decided by the transaction that records it; the parts of uploads that have not ended count); what is held already is not touched"
       security: [{adminToken: []}]
       requestBody:
         content: {application/json: {schema: {type: object, properties: {max_bytes: {type: integer, format: int64}, max_objects: {type: integer, format: int64}}}}}

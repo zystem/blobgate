@@ -54,6 +54,7 @@ var columns = [][3]string{
 	{"storage_objects", "meta", "TEXT NOT NULL DEFAULT '{}'"},       // the metadata the writer gave (a JSON object of text)
 	{"storage_objects", "deleted_at", "INTEGER NOT NULL DEFAULT 0"}, // when it was put in the trash (soft delete); 0: it is there
 	{"storage_objects", "cid", "TEXT NOT NULL DEFAULT ''"},          // the set of blocks it points to (deduplication); '': its own blocks, in `generation`
+	{"storage_guard", "quota", "INTEGER NOT NULL DEFAULT 1"},        // NULL stops a transaction that would take a tenant over its limits
 	{"storage_repair", "rev", "INTEGER NOT NULL DEFAULT 1"},         // the number of the last replacement of the task; a worker that settles a task names the revision it worked, so that a task that was replaced meanwhile (in the same second too) is not taken for the old one
 	{"storage_uploads", "content_type", "TEXT NOT NULL DEFAULT ''"},
 	{"storage_uploads", "meta", "TEXT NOT NULL DEFAULT '{}'"},
@@ -71,6 +72,10 @@ var columns = [][3]string{
 // indexes on columns that are added after the tables are made
 var lateIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS storage_sets_digest ON storage_sets (store, scope, digest, size)`,
+	// the reconcile asks by generation which directories of blocks the database knows
+	`CREATE INDEX IF NOT EXISTS storage_objects_generation ON storage_objects (store, generation)`,
+	`CREATE INDEX IF NOT EXISTS storage_sets_generation ON storage_sets (store, generation)`,
+	`CREATE INDEX IF NOT EXISTS storage_uploads_generation ON storage_uploads (store, upload)`,
 }
 
 // Migrate makes the tables and adds the columns that are missing; it can be run any number of times.

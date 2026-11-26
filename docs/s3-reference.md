@@ -54,8 +54,8 @@ words that say what to set; parts of different sizes are `400 InvalidRequest` wh
   It is the same through the core's API, in a listing and after a copy.
 * **Same bytes**: with `dedup` the objects of the same bytes share their blocks ([deduplication.md](deduplication.md)); nothing in the answers shows it.
 * **Time of creation of a bucket** is 1970: a store has none that is kept.
-* **Errors** are the words of S3 (`NoSuchKey`, `NoSuchBucket`, `NoSuchUpload`, `PreconditionFailed`, `InvalidRange`, `BadDigest`, `XAmzContentSHA256Mismatch`, `SignatureDoesNotMatch`, `InvalidAccessKeyId`, `RequestTimeTooSkewed`,
-  `EntityTooLarge`, `NotImplemented`, `ServiceUnavailable`); a refusal for want of room or a quota is `507 InsufficientStorage` with the words of the core's refusal. `Retry-After` is set with 503 and 507.
+* **Errors** are the words of S3 (`NoSuchKey`, `NoSuchBucket`, `NoSuchUpload`, `PreconditionFailed`, `InvalidRange`, `BadDigest`, `XAmzContentSHA256Mismatch`, `SignatureDoesNotMatch` (also for an access key that is no tenant: the answer does not say which tenants there are; the log does), `RequestTimeTooSkewed`,
+  `EntityTooLarge`, `NotImplemented`, `ServiceUnavailable`); a refusal for want of room or a quota is `507 InsufficientStorage` with the words of the core's refusal. `Retry-After` is set with 503 and 507. The words of a failure of the database or of a node end with `(ref <id>)`, the reference of the log line that has the whole text.
 * Consistency, quotas, the limit of the size of an object (`BLOBGATE_MAX_OBJECT_BYTES`) and the checks of the nodes are those of the core.
 
 Metrics: the routes `s3_buckets`, `s3_bucket`, `s3_delete_many`, `s3_put`, `s3_get`, `s3_head`, `s3_delete`, `s3_part_put`, `s3_parts`, `s3_upload_begin`, `s3_upload_complete`, `s3_upload_abort` ([metrics.md](metrics.md)).

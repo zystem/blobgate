@@ -19,12 +19,14 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -42,13 +44,27 @@ const (
 	adminT = "an-admin-token-for-the-process-test"
 )
 
+// A port for a server of a test: free now, and below the range the kernel takes the ports of outgoing connections from (32768 and up), so that a connection of another test cannot take it before it is
+// used. The packages of tests run side by side and each has its own stretch: here 20000..22999.
+var (
+	portMu sync.Mutex
+	portAt = mrand.IntN(3000)
+)
+
 func freePort(t *testing.T) int {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	t.Helper()
+	portMu.Lock()
+	defer portMu.Unlock()
+	for range 3000 {
+		portAt++
+		p := 20000 + portAt%3000
+		if l, err := net.Listen("tcp", fmt.Sprintf(":%d", p)); err == nil {
+			l.Close()
+			return p
+		}
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatal("no free port")
+	return 0
 }
 
 func startRqlite(t *testing.T) string {

@@ -330,7 +330,7 @@ func (w *Worker) expected(ctx context.Context, st, full, gen string, n int) (sha
 // a node could not do now.
 func (w *Worker) SweepPass(ctx context.Context) int {
 	cutoff := w.now() - int64(w.cfg.UploadTTL/time.Second)
-	rows, err := w.DB.Query(ctx, rq.S("SELECT store, key, upload FROM storage_uploads WHERE created_at < ? LIMIT 100", cutoff))
+	rows, err := w.DB.Query(ctx, rq.S("SELECT store, key, upload FROM storage_uploads WHERE created_at < ? LIMIT 100", cutoff)) // eligible
 	if err != nil {
 		return 0
 	}
@@ -344,29 +344,40 @@ func (w *Worker) SweepPass(ctx context.Context) int {
 		if err != nil && err != store.ErrNoSuchStore {
 			continue // the store could not be read now: tried again at the next pass
 		}
-		res, err := w.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? AND created_at < ?", st, full, up, cutoff),
-			rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND (SELECT count(*) FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?) = 0", st, full, up, st, full, up))
-		if err != nil || len(res) == 0 || res[0] == 0 {
-			continue // the upload was completed or aborted meanwhile, or the database failed: nothing is claimed, nothing is removed
-		}
-		swept++
-		if m == nil { // the store is gone: there is nothing on a node to remove
+		if !w.claimUpload(ctx, st, full, up, cutoff) {
 			continue
 		}
-		for _, n := range m.Nodes {
-			w.queuePurge(ctx, st, layout.DirKey(full, up), n.ID)
-		}
-		failed := map[string]bool{}
-		for _, n := range m.DeleteDir(ctx, layout.BlockDir(full, up)) {
-			failed[n.ID] = true
-		}
-		for _, n := range m.Nodes {
-			if !failed[n.ID] {
-				_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", st, layout.DirKey(full, up), n.ID))
-			}
+		swept++
+		if m != nil { // else the store is gone: there is nothing on a node to remove
+			w.removeClaimed(ctx, m, st, full, up)
 		}
 	}
 	return swept
+}
+
+// claimUpload takes an upload that is still old enough away from the writers: its row goes, and with it the right to complete it. It says false when the upload was completed or aborted meanwhile, or the
+// database failed: nothing is claimed then, and nothing may be removed.
+func (w *Worker) claimUpload(ctx context.Context, st, full, up string, cutoff int64) bool {
+	res, err := w.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? AND created_at < ?", st, full, up, cutoff),
+		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND (SELECT count(*) FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?) = 0", st, full, up, st, full, up))
+	return err == nil && len(res) > 0 && res[0] != 0
+}
+
+// removeClaimed removes the blocks of a claimed upload. The removal is written down first, so that a node that fails, or a worker that dies in the middle, is repaired later; what was done is then
+// settled.
+func (w *Worker) removeClaimed(ctx context.Context, m *store.Mirror, st, full, up string) {
+	for _, n := range m.Nodes {
+		w.queuePurge(ctx, st, layout.DirKey(full, up), n.ID)
+	}
+	failed := map[string]bool{}
+	for _, n := range m.DeleteDir(ctx, layout.BlockDir(full, up)) {
+		failed[n.ID] = true
+	}
+	for _, n := range m.Nodes {
+		if !failed[n.ID] {
+			_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", st, layout.DirKey(full, up), n.ID))
+		}
+	}
 }
 
 func (w *Worker) queuePurge(ctx context.Context, st, key, node string) error {

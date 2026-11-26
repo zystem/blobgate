@@ -492,8 +492,8 @@ func TestNodeOutOfSpaceIsAnInformativeRefusal(t *testing.T) {
 		r.mirror(0)
 		r.nodeFull(1, nodeErr)
 		code, data := r.put("acme/big", pattern(1000))
-		if code != 507 || !strings.Contains(string(data), "store_full") || !strings.Contains(string(data), "out of space") || !strings.Contains(string(data), "local:") ||
-			!strings.Contains(string(data), "cannot say beforehand") {
+		if code != 507 || !strings.Contains(string(data), "store_full") || !strings.Contains(string(data), "out of space") || !strings.Contains(string(data), "(ref ") ||
+			strings.Contains(string(data), "local:") || strings.Contains(string(data), r.nodes[1]) {
 			t.Fatalf("%s: %d %s", name, code, data)
 		}
 		for _, n := range r.nodes {

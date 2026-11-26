@@ -156,7 +156,7 @@ func main() {
 		store.NodeRetries = int(v)
 	}
 	srv := api.New(api.Config{ShardSecrets: secrets, AdminToken: admin, Reserve: envInt("BLOBGATE_RESERVE_BYTES", 0), MaxObject: envInt("BLOBGATE_MAX_OBJECT_BYTES", 0),
-		MaxReads: int(envInt("BLOBGATE_THREADS", 0)), MaxHeld: int(envInt("BLOBGATE_HELD_BLOCKS", 0)), ClientIdle: sec("BLOBGATE_CLIENT_IDLE_SECONDS", 0), UploadTTL: sec("BLOBGATE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
+		MaxReads: int(envInt("BLOBGATE_THREADS", 0)), MaxHeld: int(envInt("BLOBGATE_HELD_BLOCKS", 0)), MaxHeldTenant: int(envInt("BLOBGATE_HELD_BLOCKS_PER_TENANT", 0)), ClientIdle: sec("BLOBGATE_CLIENT_IDLE_SECONDS", 0), UploadTTL: sec("BLOBGATE_UPLOAD_TTL_SECONDS", 24*3600)}, c, reg, log)
 	host, _ := os.Hostname()
 	worker := maint.New(maint.Config{HolderID: fmt.Sprintf("%s-%d", host, os.Getpid()), RepairEvery: sec("BLOBGATE_REPAIR_SECONDS", 60), LeaseFor: sec("BLOBGATE_LEASE_SECONDS", 120), CheckEvery: sec("BLOBGATE_CHECK_SECONDS", 600),
 		RetryBase: sec("BLOBGATE_REPAIR_RETRY_SECONDS", 30), UploadTTL: sec("BLOBGATE_UPLOAD_TTL_SECONDS", 24*3600), Deep: envInt("BLOBGATE_DEEP_CHECK", 0) == 1,

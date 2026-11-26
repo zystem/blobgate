@@ -36,12 +36,15 @@ var (
 	dedupObjs  = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_dedup_objects_total", Help: "Objects written whose bytes were in the store already (they took a reference on the blocks that were there), by store."}, []string{"store"})
 	dedupBytes = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "blobgate_dedup_saved_bytes_total", Help: "Bytes of those objects: what was not kept a second time, by store."}, []string{"store"})
 	setsFreed  = prometheus.NewCounter(prometheus.CounterOpts{Name: "blobgate_sets_removed_total", Help: "Sets of blocks that no object pointed to any more, whose blocks were removed."})
+	heldBlocks = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "blobgate_held_blocks", Help: "Places of BLOBGATE_HELD_BLOCKS taken now, by kind (read, write)."}, []string{"kind"})
+	heldWait   = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "blobgate_held_wait_seconds", Help: "Time a call that found no free place waited for one, by kind.",
+		Buckets: []float64{.01, .1, 1, 5, 15, 30, 120}}, []string{"kind"})
 	leaseHeld  = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "blobgate_lease_held", Help: "1 while this replica holds the lease of a job (repair, backup)."}, []string{"name"})
 	lastBackup = prometheus.NewGauge(prometheus.GaugeOpts{Name: "blobgate_last_backup_timestamp_seconds", Help: "When the last backup of the database by this replica was written."})
 )
 
 func init() {
-	Registry.MustRegister(requests, duration, bytesTotal, nodeErrors, repairs, queueErrs, swept, dedupObjs, dedupBytes, setsFreed, checkMade, refused, freeBytes, totalBytes, leaseHeld, lastBackup,
+	Registry.MustRegister(requests, duration, bytesTotal, nodeErrors, repairs, queueErrs, swept, dedupObjs, dedupBytes, setsFreed, checkMade, refused, freeBytes, totalBytes, heldBlocks, heldWait, leaseHeld, lastBackup,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 }
 
@@ -90,6 +93,12 @@ func Room(store string, free, total int64) {
 	totalBytes.WithLabelValues(store).Set(float64(total))
 }
 
+// Held records a place for a block taken (+1) or given back (-1).
+func Held(kind string, n int) { heldBlocks.WithLabelValues(kind).Add(float64(n)) }
+
+// HeldWait records how long a call waited for a place.
+func HeldWait(kind string, d time.Duration) { heldWait.WithLabelValues(kind).Observe(d.Seconds()) }
+
 // Lease records whether this replica holds the lease of a job.
 func Lease(name string, held bool) {
 	v := 0.0
@@ -111,6 +120,7 @@ type DBCollector struct {
 	at     time.Time
 	repair map[string]float64
 	objs   map[string]float64
+	staged map[string]float64
 	oldest float64
 	up     float64
 }
@@ -119,6 +129,7 @@ var (
 	descRepair = prometheus.NewDesc("blobgate_repair_pending", "Repair tasks waiting, by store.", []string{"store"}, nil)
 	descOldest = prometheus.NewDesc("blobgate_repair_oldest_age_seconds", "Age of the oldest task waiting in the repair queue.", nil, nil)
 	descObjs   = prometheus.NewDesc("blobgate_objects", "Objects the inventory holds, by store.", []string{"store"}, nil)
+	descStaged = prometheus.NewDesc("blobgate_staged_bytes", "Bytes of the parts of uploads that have not ended, by store: room that is taken and belongs to no object yet.", []string{"store"}, nil)
 	descUp     = prometheus.NewDesc("blobgate_database_up", "1 when the database answered the last time it was asked.", nil, nil)
 )
 
@@ -128,6 +139,7 @@ func (c *DBCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descOldest
 	ch <- descObjs
 	ch <- descUp
+	ch <- descStaged
 }
 
 // Collect implements prometheus.Collector.
@@ -138,7 +150,7 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 		c.at = time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		c.up, c.repair, c.objs, c.oldest = 0, map[string]float64{}, map[string]float64{}, 0
+		c.up, c.repair, c.objs, c.staged, c.oldest = 0, map[string]float64{}, map[string]float64{}, map[string]float64{}, 0
 		if rows, err := c.DB.QueryWeak(ctx, rq.S("SELECT store, count(*), min(since) FROM storage_repair GROUP BY store")); err == nil {
 			c.up = 1
 			for _, r := range rows {
@@ -153,12 +165,20 @@ func (c *DBCollector) Collect(ch chan<- prometheus.Metric) {
 				c.objs[rq.Str(r[0])] = float64(rq.Int(r[1]))
 			}
 		}
+		if rows, err := c.DB.QueryWeak(ctx, rq.S("SELECT store, sum(CASE WHEN stored_size > 0 THEN stored_size ELSE size END) FROM storage_parts GROUP BY store")); err == nil {
+			for _, r := range rows {
+				c.staged[rq.Str(r[0])] = float64(rq.Int(r[1]))
+			}
+		}
 	}
 	for s, v := range c.repair {
 		ch <- prometheus.MustNewConstMetric(descRepair, prometheus.GaugeValue, v, s)
 	}
 	for s, v := range c.objs {
 		ch <- prometheus.MustNewConstMetric(descObjs, prometheus.GaugeValue, v, s)
+	}
+	for s, v := range c.staged {
+		ch <- prometheus.MustNewConstMetric(descStaged, prometheus.GaugeValue, v, s)
 	}
 	ch <- prometheus.MustNewConstMetric(descOldest, prometheus.GaugeValue, c.oldest)
 	ch <- prometheus.MustNewConstMetric(descUp, prometheus.GaugeValue, c.up)

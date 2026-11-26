@@ -33,7 +33,7 @@ type Stmt struct {
 // S makes a statement.
 func S(sql string, args ...any) Stmt { return Stmt{SQL: sql, Args: args} }
 
-// Rows is the result of a query: the rows as decoded JSON values (numbers are float64 unless read with the helpers).
+// Rows is the result of a query: the rows as decoded JSON values (a number is a json.Number; read it with Int).
 type Rows [][]any
 
 // Error is a failure of the database (not of a statement's logic): the caller answers 503.
@@ -130,12 +130,45 @@ func (c *Client) query(ctx context.Context, level string, s Stmt) (Rows, error) 
 		return nil, &Error{"no result"}
 	}
 	var r struct {
-		Values [][]any `json:"values"`
+		Types  []string `json:"types"`
+		Values [][]any  `json:"values"`
 	}
-	if err := json.Unmarshal(res[0], &r); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(res[0]))
+	dec.UseNumber() // a number stays as it was written: through float64 an integer above 2^53 would not be the one in the database
+	if err := dec.Decode(&r); err != nil {
 		return nil, &Error{err.Error()}
 	}
+	if err := typed(r.Types, r.Values); err != nil {
+		return nil, err
+	}
 	return r.Values, nil
+}
+
+// typed refuses an answer with a cell that is not what its column is. SQLite keeps whatever it is given (a text in a column of integers too), and Int and Str would read such a cell as 0 or "": a
+// size, a reference count or a generation that is silently wrong. NULL is a value of any column.
+func typed(types []string, rows [][]any) error {
+	for _, row := range rows {
+		for i, v := range row {
+			if v == nil || i >= len(types) {
+				continue
+			}
+			ok := true
+			switch types[i] {
+			case "integer", "int", "bigint", "boolean":
+				n, is := v.(json.Number)
+				if ok = is; is {
+					_, err := n.Int64()
+					ok = err == nil
+				}
+			case "text":
+				_, ok = v.(string)
+			}
+			if !ok {
+				return &Error{fmt.Sprintf("column %d of the answer is %s and holds something else (%T): the database is damaged", i+1, types[i], v)}
+			}
+		}
+	}
+	return nil
 }
 
 // Ready says whether the database answers.
@@ -158,10 +191,21 @@ func Str(v any) string {
 	return s
 }
 
-// Int reads a number cell.
+// Int reads a number cell; a cell that is no number is 0.
 func Int(v any) int64 {
-	f, _ := v.(float64)
-	return int64(f)
+	switch n := v.(type) {
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i
+		}
+		f, _ := n.Float64()
+		return int64(f)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	}
+	return 0
 }
 
 // Bool reads a 0/1 cell.

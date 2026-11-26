@@ -83,7 +83,7 @@ func (s *Server) s3Copy(w http.ResponseWriter, r *http.Request, tenant, bucket, 
 	}
 	o, err := s.getRow(ctx, sb, sfull)
 	if err != nil {
-		s3Fail(w, r, 500, "InternalError", err.Error())
+		s3Fail(w, r, 500, "InternalError", s.hide("an internal error", err))
 		return
 	}
 	if o == nil {
@@ -103,7 +103,7 @@ func (s *Server) s3Copy(w http.ResponseWriter, r *http.Request, tenant, bucket, 
 			return
 		}
 	}
-	if e := s.checkQuota(ctx, dm, dfull, o.size); e != nil {
+	if e := s.checkQuota(ctx, dm, held{key: dfull}, o.size); e != nil {
 		e.write(cw)
 		cw.sendError(r, nil)
 		return
@@ -132,7 +132,7 @@ func (s *Server) copyBySet(w http.ResponseWriter, r *http.Request, m *store.Mirr
 	ctx, st := r.Context(), m.Name
 	old, err := s.getRowAny(ctx, st, dfull)
 	if err != nil {
-		s3Fail(w, r, 500, "InternalError", err.Error())
+		s3Fail(w, r, 500, "InternalError", s.hide("an internal error", err))
 		return false
 	}
 	pj, _ := json.Marshal(om.Pairs)
@@ -156,7 +156,7 @@ func (s *Server) copyBySet(w http.ResponseWriter, r *http.Request, m *store.Mirr
 			s3Fail(w, r, 404, "NoSuchKey", "the source of the copy was removed just now")
 			return false
 		}
-		s3Fail(w, r, 500, "InternalError", err.Error())
+		s3Fail(w, r, 500, "InternalError", s.hide("an internal error", err))
 		return false
 	}
 	s.at("copy:after-tx")
@@ -276,7 +276,7 @@ func (s *Server) s3CopyPart(w http.ResponseWriter, r *http.Request, tenant, buck
 	}
 	o, err := s.getRow(ctx, sb, tenant+"/"+sk)
 	if err != nil {
-		s3Fail(w, r, 500, "InternalError", err.Error())
+		s3Fail(w, r, 500, "InternalError", s.hide("an internal error", err))
 		return
 	}
 	if o == nil {

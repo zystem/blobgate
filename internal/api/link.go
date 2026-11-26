@@ -45,13 +45,13 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 	if !ok {
 		return
 	}
-	if e := s.checkQuota(ctx, m, full, body.Size); e != nil { // the limit is of what the tenant holds as its objects, shared bytes or not
+	if e := s.checkQuota(ctx, m, held{key: full}, body.Size); e != nil { // the limit is of what the tenant holds as its objects, shared bytes or not
 		e.write(w)
 		return
 	}
 	set, err := s.DB.Query(ctx, rq.S("SELECT cid FROM storage_sets WHERE store = ? AND scope = ? AND digest = ? AND size = ? ORDER BY created_at LIMIT 1", m.Name, scopeOf(m, full), body.SHA256, body.Size))
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	noContent := func() {
@@ -64,7 +64,7 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 	cid := rq.Str(set[0][0])
 	old, err := s.getRowAny(ctx, m.Name, full)
 	if err != nil {
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	pj, _ := json.Marshal(om.Pairs)
@@ -73,6 +73,7 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 	}
 	s.at("link:before")
 	stmts := cond.guard(m.Name, full)
+	stmts = append(stmts, quotaGuard(m.Name, held{key: full}, true, "?", body.Size))
 	stmts = append(stmts, s.releaseSet(m.Name, full, false))
 	stmts = append(stmts, s.purgeTasks(m, full, "")...)
 	stmts = append(stmts,
@@ -89,11 +90,15 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 			problem(w, 412, "precondition_failed", errPreconditionFailed.Error())
 			return
 		}
+		if quotaStopped(err) {
+			s.fail(w, errQuota)
+			return
+		}
 		if errors.As(err, &re) && strings.Contains(re.Msg, "NOT NULL") {
 			noContent()
 			return
 		}
-		fail(w, err)
+		s.fail(w, err)
 		return
 	}
 	s.at("link:after-tx")

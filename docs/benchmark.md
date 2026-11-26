@@ -98,3 +98,30 @@ What it shows:
 
 **Not run:** several replicas under this load (each has its own places); a slow but moving client (the idle time counts a piece of 256 KiB); the memory of the process as RSS by the kernel (`kubectl top` is the working set of the container); a link with real loss; the limit of the chart with `BLOBGATE_HELD_BLOCKS` raised.
 
+
+## Plain, sealed and deduplicated stores, first byte, room and repair (2026-11-27)
+
+**Run:** `tools/bench/modes.sh` three times, the median of the three; the code after 0.12.0 on the branch that adds this section, with 0.12.0 beside it for the plain store. One workstation (32 threads, Linux 6.8) with other work going on
+(load average 6 to 13), rqlite 10.5.1 on a tmpfs, two local nodes on `/dev/shm`, **every object with bytes of its own**. Local nodes measure what the gateway costs; **no remote backend, no network delay or loss, no cluster was run**.
+
+| Load | 0.12.0, plain, every node | plain, every node | plain, `min_acks` 1 | sealed, every node | sealed, `min_acks` 1 | dedup, every node | dedup, `min_acks` 1 |
+|---|---|---|---|---|---|---|---|
+| PUT 8 MiB, 4 clients, MB/s | 423 | 397 | 407 | 387 | 410 | 397 | 393 |
+| GET 8 MiB, 4 clients, MB/s | 1336 | 1235 | 1313 | 995 | 988 | 1374 | 1275 |
+| PUT 64 KiB, 8 clients, /s | 797 | 735 | 741 | 726 | 589 | 605 | 517 |
+| GET 64 KiB, 8 clients, /s | 3239 | 3793 | 3082 | 2885 | 3005 | 3703 | 3064 |
+| PUT 1 GiB in parts of 8 MiB, 1 client, MB/s | 224 | 211 | 206 | 179 | 187 | 216 | 206 |
+| GET 1 GiB in ranges of 8 MiB, 1 client, MB/s | 537 | 478 | 545 | 406 | 417 | 551 | 558 |
+| PUT 8 MiB, time to the answer, p99 ms | 77 | 86 | 80 | 107 | 85 | 84 | 85 |
+| GET 8 MiB, first byte, p99 ms | 19 | 19 | 20 | 33 | 32 | 18 | 20 |
+| PUT 64 KiB, time to the answer, p99 ms | 19 | 19 | 17 | 19 | 26 | 20 | 36 |
+| GET 64 KiB, first byte, p99 ms | 8.3 | 5.4 | 7.6 | 8.5 | 7.7 | 6.0 | 7.9 |
+| Bytes on the two nodes for a byte written | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 | 2.00 |
+| Repair of 32 objects of 8 MiB after a node came back, s | not run | not run | 1.7 | not run | 1.9 | not run | 1.4 |
+
+* **The runs spread widely**: the same cell differs between runs by a tenth as a rule and by up to a half in one run (a p99 of 794 ms against 84 ms in the other two). Differences of a tenth between two cells say nothing.
+* **Against 0.12.0** the writes of the plain store are 6 to 8 % lower in the medians. This is inside the usual spread or close to it; whether the checks added since (the quota in the transaction of the commit, the types of the cells) cost this was not
+  separated from the noise.
+* **Room**: two nodes, so two bytes for a byte. The objects differ, so deduplication saves nothing here; what it saves is in [deduplication.md](deduplication.md).
+* **Repair lag** is measured with `BLOBGATE_REPAIR_SECONDS=1` and `BLOBGATE_REPAIR_RETRY_SECONDS=1` (the defaults are 60 and 30, and then the pause, not the copying, decides the time).
+* The time to the first byte of a read is the time until the status: the first block has been read and checked by then. For a write it is the time to the answer.

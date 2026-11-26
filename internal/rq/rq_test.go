@@ -3,6 +3,8 @@ package rq
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -70,5 +72,40 @@ func TestClient(t *testing.T) {
 	}
 	if Str(1.5) != "" || Int("x") != 0 {
 		t.Fatal("a cell of another kind is the zero value")
+	}
+}
+
+// An integer above 2^53 comes out of a query as it is in the database, and not as the nearest floating-point number.
+func TestLargeIntegersStayExact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"results":[{"values":[[9007199254740993, -9223372036854775808, 1.5, "7", null]]}]}`)
+	}))
+	defer srv.Close()
+	rows, err := New(srv.URL).Query(context.Background(), S("SELECT 1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []int64{9007199254740993, math.MinInt64, 1, 0, 0} {
+		if got := Int(rows[0][i]); got != want {
+			t.Errorf("cell %d: %d, want %d", i, got, want)
+		}
+	}
+}
+
+// A cell that is not what its column is (SQLite keeps what it is given) is an error and not a silent zero.
+func TestWrongCellTypeIsAnError(t *testing.T) {
+	for answer, ok := range map[string]bool{
+		`{"types":["integer","text"],"values":[[1,"a"],[null,null]]}`: true,
+		`{"types":["integer"],"values":[["12"]]}`:                     false,
+		`{"types":["integer"],"values":[[1.5]]}`:                      false,
+		`{"types":["text"],"values":[[7]]}`:                           false,
+		`{"types":[""],"values":[[null]]}`:                            true,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"results":[`+answer+`]}`) }))
+		_, err := New(srv.URL).Query(context.Background(), S("SELECT 1"))
+		srv.Close()
+		if (err == nil) != ok || (err != nil && !IsDB(err)) {
+			t.Errorf("%s: %v", answer, err)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,7 +171,7 @@ func TestSlowReadersDoNotTakeThePlacesOfWriters(t *testing.T) {
 	was := holdWait
 	holdWait = 2 * time.Second
 	t.Cleanup(func() { holdWait = was })
-	r := newRig(t, func(c *Config) { c.MaxHeld = held; c.ClientIdle = 30 * time.Second })
+	r := newRig(t, func(c *Config) { c.MaxHeld = held; c.MaxHeldTenant = held; c.ClientIdle = 30 * time.Second }) // no limit of the tenant: this is about the kinds
 	r.mirror(0)
 	body := pattern(2*BlockSize + 10)
 	if code, d := r.put("k/big", body); code != 200 {
@@ -234,6 +235,12 @@ func TestSlowReadersDoNotTakeThePlacesOfWriters(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 503 {
 		t.Errorf("a writer with every place taken: %d, want 503", resp.StatusCode)
+	}
+	out := r.scrape()
+	for _, want := range []string{`blobgate_refused_total{reason="busy"}`, `blobgate_held_blocks{kind="read"} 6`, `blobgate_held_blocks{kind="write"} 2`, `blobgate_held_wait_seconds_count{kind="read"}`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in the metrics", want)
+		}
 	}
 	cancel()
 	wg.Wait()

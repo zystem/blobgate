@@ -6,7 +6,7 @@ the repair queue, the check of the inventory (size, or deep: the digest), the sw
 (`cmd/blobgate`; SIGTERM lets go of the lease, checked by hand). Run against `local` nodes, and (`BLOBGATE_DOCKER_TESTS=1`, Docker, the image `drakkan/sftpgo`) against real WebDAV, FTP and SFTP servers: a mirror of WebDAV + FTP, of WebDAV + FTP + SFTP, a node that goes away and comes back, a node that loses its disk, names that a node could trip on (space, trailing dot, unicode, a 250-byte segment, `:*?`, case), 24 writers under one parent directory; and a real Garage (S3) through rclone, with the room taken from its metrics. Passed on 2026-11-12.
 
 A block that does not fit: when a node says how much room it has (`about`, or Garage's `space_url`) the module refuses beforehand with 507 and the figures; when it cannot (FTP, most WebDAV), the write
-is tried and, if too few nodes take the block because a node reports no room (ENOSPC, quota, FTP 552, WebDAV 507), the answer is the same 507 `store_full` with a sentence that names the node and says what to do
+is tried and, if too few nodes take the block because a node reports no room (ENOSPC, quota, FTP 552, WebDAV 507), the answer is the same 507 `store_full` with a sentence that says what to do and a reference of the log line that names the node
 (`store.ErrNoSpace`, test `TestNodeOutOfSpaceIsAnInformativeRefusal`). A node that is full while the others are enough (`min_acks`) is given the block later by the repair pass.
 
 The routes of the server and `openapi.yaml` are checked to be the same set (`TestOpenAPIMatchesRoutes`).
