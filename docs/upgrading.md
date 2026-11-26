@@ -57,3 +57,12 @@ for CiNim (D-60), and nothing is read from the old layout.
 * Slow readers, or slow writers, can take at most three quarters of `BLOBGATE_HELD_BLOCKS` (24 of 32).
 
 Run on 2026-11-26 with this code: the tests of the repository, the AWS CLI, boto3, rclone and s3cmd. Not run: the upgrade of a running 0.11.6, the other SDKs and `mc`.
+
+**0.13.0** makes quotas hard limits and says less to callers about failures ([../CHANGELOG.md](../CHANGELOG.md)). Look at these before you update:
+
+* **Quotas count the parts of uploads that have not ended.** An abandoned upload holds its room until it is aborted or swept (`BLOBGATE_UPLOAD_TTL_SECONDS`, a day). A tenant near its limit may need a larger one, or a shorter time. A part over the limit is now `507` when it is sent.
+* **With more than one tenant, one takes at most three quarters of `BLOBGATE_HELD_BLOCKS`** (24 of 32), on each replica. `BLOBGATE_HELD_BLOCKS_PER_TENANT` (chart `config.heldBlocksPerTenant`) changes it; a value of `BLOBGATE_HELD_BLOCKS` or more is no limit.
+* S3 door: an access key that is no tenant is answered `SignatureDoesNotMatch`, not `InvalidAccessKeyId`. The detail of a failure of the database or of a node, and of `507 store_full`, no longer names nodes, hosts or paths: it ends with `(ref <id>)`, and the log line with that reference has the text. A script that matched on the old words has to change.
+* The schema gains a column (`storage_guard.quota`) and indexes by generation at start; nothing is to be done by hand, but making the indexes on a large inventory takes a while. During a rolling upgrade an older replica still treats quotas as soft. After `blobgate backup restore` of an older backup, restart the replicas.
+
+Run on 2026-11-27 on one machine: 0.12.0 and this code side by side on one database and two local nodes (each reads what the other wrote, an upload begun on 0.12.0 is completed by the new one). Not run: an upgrade in a cluster, remote backends, the S3 clients other than the AWS CLI in that check, the Ceph tests.
