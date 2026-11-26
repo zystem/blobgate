@@ -24,6 +24,9 @@ tried at once, and the task is taken out of the queue by the node that did it. N
 | a write in a store with deduplication that found its bytes in the store: the transaction is done | the blocks it wrote, with a `purge` task for every node | the repair pass (docs/deduplication.md) |
 | the last object of a set of blocks is deleted | the set with `refs = 0` | the worker's pass: one transaction removes the row and writes down the removal of the blocks |
 | an abort: the blocks are removed, the rows are not | the rows | the sweep |
+| the sweep has claimed an expired upload (its row is deleted, in a transaction), the blocks are not yet removed | the blocks, with a `purge` task for every node | the repair pass |
+
+The sweep takes an upload by deleting its row in a transaction, only if it is still there and still older than the limit, and a commit requires the row in its own transaction: of an expiry and a completion at the same moment exactly one wins, and a completion that lost is answered `404 no_such_upload`. A directory that a reconcile marked as stray is asked for its owner again at the moment of the removal.
 
 A node that cannot take a write while the others do (with `min_acks` below the number of nodes) gets a `copy` task; the repair pass reads the block from a node that has it, checks its SHA-256 against
 the database and writes it.

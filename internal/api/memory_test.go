@@ -49,6 +49,7 @@ func (r *rig) stalledPut(key string, sent int, unsized bool, started *sync.WaitG
 // for the idle time is ended, so its place is free again.
 func TestMemoryOfSlowClients(t *testing.T) {
 	const n, held = 24, 4
+	const kind = held - held/4 // a kind of call takes at most three quarters of the places
 	was := holdWait
 	holdWait = 2 * time.Second
 	t.Cleanup(func() { holdWait = was })
@@ -61,7 +62,7 @@ func TestMemoryOfSlowClients(t *testing.T) {
 	base := heapNow()
 	const limit = (held + 3) << 23 // the places, and some room for what the runtime has not given back yet
 
-	// readers: the first `held` get a block each and stop; the others find no place and are told so
+	// readers: the first `kind` get a block each and stop; the others find no place and are told so
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var mu sync.Mutex
@@ -94,8 +95,8 @@ func TestMemoryOfSlowClients(t *testing.T) {
 		t.Logf("%d readers that stopped after one byte hold %d MiB with %d places (a block each, 8 MiB)", n, got>>20, held)
 	}
 	mu.Lock()
-	if codes[200] != held || codes[503] != n-held {
-		t.Errorf("answers %v: want %d of 200 and %d of 503", codes, held, n-held)
+	if codes[200] != kind || codes[503] != n-kind {
+		t.Errorf("answers %v: want %d of 200 and %d of 503", codes, kind, n-kind)
 	}
 	mu.Unlock()
 	// the quiet ones are ended by the module after the idle time: the places come back
@@ -160,4 +161,80 @@ func TestQuietWritersOfASealedStoreDoNotStopOthers(t *testing.T) {
 		t.Fatalf("a write beside quiet writers: %d %s", code, d)
 	}
 	t.Logf("the write beside four quiet writers took %v (idle time 3 s, two places)", time.Since(t0).Round(100*time.Millisecond))
+}
+
+// A flood of slow readers does not keep the writers out: a kind of call takes at most three quarters of the places, the last quarter is for the other kind. (With every place for every kind, the readers
+// that came first took all 32 places of a pod in a cluster and every writer and part after them was told 503 busy.)
+func TestSlowReadersDoNotTakeThePlacesOfWriters(t *testing.T) {
+	const held = 8 // readers may take 6, writers 6; 2 places are always left to the other kind
+	was := holdWait
+	holdWait = 2 * time.Second
+	t.Cleanup(func() { holdWait = was })
+	r := newRig(t, func(c *Config) { c.MaxHeld = held; c.ClientIdle = 30 * time.Second })
+	r.mirror(0)
+	body := pattern(2*BlockSize + 10)
+	if code, d := r.put("k/big", body); code != 200 {
+		t.Fatalf("put: %d %s", code, d)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	codes := map[int]int{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp := r.open(ctx, "k/big")
+			mu.Lock()
+			codes[resp.StatusCode]++
+			mu.Unlock()
+			if resp.StatusCode == 200 {
+				_, _ = io.ReadFull(resp.Body, make([]byte, 1))
+				<-ctx.Done()
+			}
+			resp.Body.Close()
+		}()
+	}
+	time.Sleep(3 * time.Second) // the readers that found no place have given up
+	mu.Lock()
+	if codes[200] != 6 || codes[503] != 14 {
+		t.Errorf("readers alone: %v, want 6 of 200 and 14 of 503", codes)
+	}
+	mu.Unlock()
+	if len(r.s.held) != 6 {
+		t.Fatalf("%d places taken by the readers, want 6", len(r.s.held))
+	}
+	// two writers of no known length, as quiet as can be, find their places: the 2 that the readers cannot take
+	done := make(chan struct{})
+	defer close(done)
+	var started sync.WaitGroup
+	started.Add(2)
+	for i := 0; i < 2; i++ {
+		go r.stalledPut("k/fw"+string(rune('a'+i)), 3<<20, true, &started, done)
+	}
+	started.Wait()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(r.s.held) != 8 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d places taken with 6 readers and 2 writers, want all 8", len(r.s.held))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// a third writer finds none (the total is taken) and is told so; a seventh reader would not have got one either
+	path := "/v1/stores/_default/objects/k/third"
+	req, _ := http.NewRequest("PUT", r.ts.URL+path, io.NopCloser(bytes.NewReader(pattern(2*BlockSize+5))))
+	req.ContentLength = -1
+	req.Header.Set("Authorization", "Bearer "+auth.SignTarget(secret1, "001", "PUT", path, time.Now().Unix()))
+	req.Header.Set("X-Blobgate-Tenant", "001")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 503 {
+		t.Errorf("a writer with every place taken: %d, want 503", resp.StatusCode)
+	}
+	cancel()
+	wg.Wait()
 }

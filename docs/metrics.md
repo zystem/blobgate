@@ -14,6 +14,7 @@ Reference page. `GET /metrics` on the main port with the admin token, or on `BLO
 | `blobgate_repair_oldest_age_seconds` | gauge | | Age of the oldest task waiting: **alert on it**; a growing value means a node that does not come back. |
 | `blobgate_repair_tasks_total` | counter | result (`done`, `failed`) | Tasks worked. |
 | `blobgate_check_tasks_total` | counter | | Copy tasks made by the check of the inventory. |
+| `blobgate_repair_enqueue_errors_total` | counter | | Repair tasks (a copy for a node that missed a write, a removal) that could not be written down in the database. A write whose copy cannot be written down is refused with 503. |
 | `blobgate_swept_uploads_total` | counter | | Uploads that never ended whose blocks were removed. |
 | `blobgate_dedup_objects_total` | counter | `store` | Objects written whose bytes were in the store already (they took a reference on the blocks that were there). |
 | `blobgate_dedup_saved_bytes_total` | counter | `store` | Bytes of those objects: what was not kept a second time. |

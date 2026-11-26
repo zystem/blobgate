@@ -2,9 +2,11 @@ package auth
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"strings"
@@ -98,7 +100,8 @@ func signedChunks(c *S3Call, parts [][]byte, trailer bool) []byte {
 		}
 	}
 	if trailer {
-		b.WriteString("x-amz-checksum-crc32c:AAAAAA==\r\nx-amz-trailer-signature:00\r\n\r\n")
+		sts := "AWS4-HMAC-SHA256-TRAILER\n" + c.stamp + "\n" + c.scope + "\n" + prev + "\n" + hexSHA("x-amz-checksum-crc32c:AAAAAA==\n")
+		fmt.Fprintf(&b, "x-amz-checksum-crc32c:AAAAAA==\r\nx-amz-trailer-signature:%s\r\n\r\n", hex.EncodeToString(hmacRaw(c.key, sts)))
 	} else {
 		b.WriteString("\r\n")
 	}
@@ -168,4 +171,105 @@ func FuzzVerifySigV4(f *testing.F) {
 		r.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 		_, _ = VerifySigV4(r, awsSecretOf, awsNow)
 	})
+}
+
+// The trailer of a signed streamed body is itself signed: a checksum changed on the way is not believed.
+func TestTrailerSignature(t *testing.T) {
+	c := &S3Call{key: []byte("k"), stamp: "20130524T000000Z", scope: "20130524/us-east-1/s3/aws4_request", seed: strings.Repeat("ab", 32), PayloadHash: streamingSigTr}
+	body := signedChunks(c, [][]byte{[]byte("hello")}, true)
+	bad := bytes.Replace(body, []byte("AAAAAA=="), []byte("AAAAAB=="), 1)
+	if _, err := io.ReadAll(c.ChunkedBody(bytes.NewReader(bad))); !errors.Is(err, ErrBadChunk) {
+		t.Fatalf("a changed trailer: %v", err)
+	}
+}
+
+// A checksum that the sender declares is checked, in a header and in a trailer; one that this module cannot check is refused, never ignored.
+func TestCheckedBody(t *testing.T) {
+	c := &S3Call{}
+	body := []byte("hello world")
+	sum32 := func(b []byte) string {
+		h := crc32.NewIEEE()
+		h.Write(b)
+		return base64.StdEncoding.EncodeToString(h.Sum(nil))
+	}
+	sumNVMe := func(b []byte) string {
+		h := checksumAlgs["crc64nvme"]()
+		h.Write(b)
+		return base64.StdEncoding.EncodeToString(h.Sum(nil))
+	}
+	mk := func(h map[string]string) *http.Request {
+		r, _ := http.NewRequest("PUT", "http://x/", nil)
+		for k, v := range h {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	read := func(r *http.Request, b []byte) error {
+		_, err := io.ReadAll(c.CheckedBody(r, bytes.NewReader(b)))
+		return err
+	}
+	if err := read(mk(nil), body); err != nil {
+		t.Fatalf("no checksum declared: %v", err)
+	}
+	if err := read(mk(map[string]string{"X-Amz-Checksum-Crc32": sum32(body)}), body); err != nil {
+		t.Fatalf("the right crc32: %v", err)
+	}
+	if err := read(mk(map[string]string{"X-Amz-Checksum-Crc32": sum32([]byte("other"))}), body); !errors.Is(err, ErrBadChecksum) {
+		t.Fatalf("a wrong crc32: %v", err)
+	}
+	if err := read(mk(map[string]string{"X-Amz-Checksum-Crc64nvme": sumNVMe(body)}), body); err != nil {
+		t.Fatalf("the right crc64nvme: %v", err)
+	}
+	if err := read(mk(map[string]string{"X-Amz-Checksum-Sha512": "AAAA"}), body); !errors.Is(err, ErrBadChecksum) {
+		t.Fatalf("an algorithm that is not known: %v", err)
+	}
+	// the trailer of a streamed body
+	c = &S3Call{key: []byte("k"), stamp: "20130524T000000Z", scope: "20130524/us-east-1/s3/aws4_request", seed: strings.Repeat("ab", 32), PayloadHash: streamingSigTr}
+	chunked := func(sum string) []byte {
+		var b bytes.Buffer
+		prev := c.seed
+		for _, p := range [][]byte{body, nil} {
+			sts := "AWS4-HMAC-SHA256-PAYLOAD\n" + c.stamp + "\n" + c.scope + "\n" + prev + "\n" + hexSHA("") + "\n" + hex.EncodeToString(sha256Sum(p))
+			prev = hex.EncodeToString(hmacRaw(c.key, sts))
+			fmt.Fprintf(&b, "%x;chunk-signature=%s\r\n", len(p), prev)
+			if len(p) > 0 {
+				b.Write(p)
+				b.WriteString("\r\n")
+			}
+		}
+		line := "x-amz-checksum-crc32:" + sum + "\n"
+		sts := "AWS4-HMAC-SHA256-TRAILER\n" + c.stamp + "\n" + c.scope + "\n" + prev + "\n" + hexSHA(line)
+		fmt.Fprintf(&b, "x-amz-checksum-crc32:%s\r\nx-amz-trailer-signature:%s\r\n\r\n", sum, hex.EncodeToString(hmacRaw(c.key, sts)))
+		return b.Bytes()
+	}
+	readTr := func(sum string) error {
+		r := mk(map[string]string{"X-Amz-Trailer": "x-amz-checksum-crc32"})
+		_, err := io.ReadAll(c.CheckedBody(r, c.ChunkedBody(bytes.NewReader(chunked(sum)))))
+		return err
+	}
+	if err := readTr(sum32(body)); err != nil {
+		t.Fatalf("the right checksum in the trailer: %v", err)
+	}
+	if err := readTr(sum32([]byte("other"))); !errors.Is(err, ErrBadChecksum) {
+		t.Fatalf("a wrong checksum in the trailer: %v", err)
+	}
+}
+
+// Headers that decide what a call does must be signed.
+func TestUnsignedDecidingHeaders(t *testing.T) {
+	r := awsGet(t)
+	call, err := VerifySigV4(r, awsSecretOf, awsNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := call.CheckSigned(r); err != nil {
+		t.Fatalf("an ordinary call: %v", err)
+	}
+	for _, h := range []string{"X-Amz-Copy-Source", "X-Amz-Metadata-Directive", "X-Amz-Meta-Owner", "Content-MD5", "X-Amz-Checksum-Crc32", "X-Amz-Copy-Source-Range"} {
+		r2 := r.Clone(r.Context())
+		r2.Header.Set(h, "x")
+		if err := call.CheckSigned(r2); !errors.Is(err, ErrUnsigned) {
+			t.Errorf("%s added after the signature: %v", h, err)
+		}
+	}
 }

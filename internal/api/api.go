@@ -53,14 +53,15 @@ type Config struct {
 
 // Server answers the calls.
 type Server struct {
-	cfg   Config
-	DB    *rq.Client
-	Reg   *store.Registry
-	reads chan struct{}
-	seals chan struct{} // blocks being sealed: each holds one in memory
-	held  chan struct{} // blocks held in memory for a client (a read being sent, a write of many blocks)
-	log   *slog.Logger
-	book  statusBook
+	cfg      Config
+	DB       *rq.Client
+	Reg      *store.Registry
+	reads    chan struct{}
+	seals    chan struct{}    // blocks being sealed: each holds one in memory
+	held     chan struct{}    // blocks held in memory for a client (a read being sent, a write of many blocks)
+	heldKind [2]chan struct{} // the same by kind (heldRead, heldWrite): each may take three quarters of the places
+	log      *slog.Logger
+	book     statusBook
 }
 
 // New makes a server.
@@ -86,7 +87,9 @@ func New(cfg Config, db *rq.Client, reg *store.Registry, log *slog.Logger) *Serv
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), seals: make(chan struct{}, cfg.MaxReads), held: make(chan struct{}, cfg.MaxHeld), log: log}
+	kindMax := max(cfg.MaxHeld-cfg.MaxHeld/4, 1)
+	return &Server{cfg: cfg, DB: db, Reg: reg, reads: make(chan struct{}, cfg.MaxReads), seals: make(chan struct{}, cfg.MaxReads), held: make(chan struct{}, cfg.MaxHeld),
+		heldKind: [2]chan struct{}{make(chan struct{}, kindMax), make(chan struct{}, kindMax)}, log: log}
 }
 
 func (s *Server) now() int64 { return s.cfg.Now().Unix() }
@@ -120,6 +123,10 @@ func fail(w http.ResponseWriter, err error) {
 	var un *store.ErrUnavailable
 	var nokey *store.ErrNoKey
 	switch {
+	case errors.Is(err, errPreconditionFailed):
+		problem(w, 412, "precondition_failed", err.Error())
+	case errors.Is(err, errUploadGone):
+		problem(w, 404, "no_such_upload", err.Error())
 	case rq.IsDB(err):
 		problem(w, 503, "database_unavailable", err.Error())
 	case errors.Is(err, store.ErrNotFound):

@@ -16,6 +16,7 @@ import (
 // were not bounded at all (a part is 8 MiB). Now the places of BLOBGATE_HELD_BLOCKS bound them, and the idle time ends the quiet ones.
 func TestMemoryOfQuietPartUploads(t *testing.T) {
 	const n, held = 24, 4
+	const kind = held - held/4 // a kind of call takes at most three quarters of the places
 	was := holdWait
 	holdWait = 2 * time.Second
 	t.Cleanup(func() { holdWait = was })
@@ -78,8 +79,8 @@ func TestMemoryOfQuietPartUploads(t *testing.T) {
 	}
 	mu.Lock()
 	t.Logf("answers so far: %v", codes)
-	if codes[503] != n-held {
-		t.Errorf("answers %v: want %d of 503", codes, n-held)
+	if codes[503] != n-kind {
+		t.Errorf("answers %v: want %d of 503", codes, n-kind)
 	}
 	mu.Unlock()
 	deadline := time.Now().Add(15 * time.Second)

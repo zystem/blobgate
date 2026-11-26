@@ -18,8 +18,11 @@ A tenant sees its own keys only, through either door.
 ## Signatures
 
 Signature Version 4 only (**boto3** makes a presigned address with Signature Version 2 unless the client is made with `Config(signature_version="s3v4")`), in the header or in the query (a presigned address, up to 7 days). The payload may be signed (`x-amz-content-sha256` is its digest, which is checked as the body is written), `UNSIGNED-PAYLOAD`, or streamed
-(`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, with or without `-TRAILER`, and `STREAMING-UNSIGNED-PAYLOAD-TRAILER`): every chunk of a signed stream is checked before its bytes are used. A checksum that comes in a trailer
-(`x-amz-checksum-*`) is read and **not checked**: the module checks the digests it makes itself. The time of the request must be within 15 minutes of the time of the module.
+(`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, with or without `-TRAILER`, and `STREAMING-UNSIGNED-PAYLOAD-TRAILER`): every chunk of a signed stream is checked as its last byte is read, and a signed trailer is checked too; a chunk or trailer that is wrong ends the body with an error, and nothing is committed of a body that did not end well.
+
+What the signature must cover: a header that decides what a call does must be in `SignedHeaders` (`x-amz-copy-source` and its `-range` and `-if-*`, `x-amz-metadata-directive`, `x-amz-tagging-directive`, `x-amz-meta-*`, `x-amz-checksum-*`, `x-amz-trailer`, `x-amz-sdk-checksum-algorithm`, `x-amz-decoded-content-length`, `Content-MD5`); a call that carries one that is not signed is refused with `403 AccessDenied`, as S3 does.
+
+What is checked of a body: a signed payload digest (also of the XML of DeleteObjects and CompleteMultipartUpload, before anything is done with it), `Content-MD5`, and a declared checksum (`x-amz-checksum-crc32`, `-crc32c`, `-crc64nvme`, `-sha1`, `-sha256`, in a header or in the trailer): a wrong one is `400 BadDigest`, and a checksum of another algorithm is refused rather than ignored. `UNSIGNED-PAYLOAD` with no checksum is not checked. The time of the request must be within 15 minutes of the time of the module.
 
 ## Calls
 
@@ -29,7 +32,7 @@ Signature Version 4 only (**boto3** makes a presigned address with Signature Ver
 | HeadBucket, GetBucketLocation | yes |
 | GetBucketVersioning | yes: an empty configuration (a store keeps no versions); enabling it is `501` |
 | ListObjectsV2, ListObjects (v1) | yes: `prefix`, `delimiter`, `max-keys` (up to 1000), `continuation-token`, `start-after`, `marker`, `encoding-type=url`; read from the inventory, no node is asked |
-| PutObject | yes: `Content-Type`, `x-amz-meta-*`, `If-Match`, `If-None-Match`, `Content-MD5` (checked; a wrong one is `BadDigest`) |
+| PutObject | yes: `Content-Type`, `x-amz-meta-*`, `If-Match`, `If-None-Match` (decided in the transaction that writes: of two writers under one condition one is `412`; an `If-Match` takes a strong tag only), `Content-MD5` (checked; a wrong one is `BadDigest`) |
 | GetObject, HeadObject | yes: `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`; streamed |
 | DeleteObject, DeleteObjects | yes (up to 1000 keys). With a trash (`soft_delete_seconds`) the object goes to the trash |
 | CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListParts | yes, with the limit below |

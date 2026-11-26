@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/zystem/blobgate/internal/layout"
@@ -26,6 +27,7 @@ type Config struct {
 	DeepBytesPS int64         // the most the deep check reads in a second (0: no limit)
 	LeaseFor    time.Duration // how long a hold lasts without being renewed (120 s)
 	Now         func() time.Time
+	Hook        func(point string) // for tests: called at "repair:before-settle", between the work of a task and the closing of it
 	Log         *slog.Logger
 }
 
@@ -147,12 +149,12 @@ func (w *Worker) Pass(ctx context.Context) {
 
 type task struct {
 	store, key, node, op string
-	since, attempts      int64
+	since, attempts, rev int64
 }
 
 // RepairPass works the due tasks of the queue; it returns how many were done and how many failed (to be tried again later).
 func (w *Worker) RepairPass(ctx context.Context) (done, failed int) {
-	rows, err := w.DB.Query(ctx, rq.S("SELECT store, key, node, op, since, attempts FROM storage_repair WHERE next_at <= ? ORDER BY since LIMIT 100", w.now()))
+	rows, err := w.DB.Query(ctx, rq.S("SELECT store, key, node, op, since, attempts, rev FROM storage_repair WHERE next_at <= ? ORDER BY since LIMIT 100", w.now()))
 	if err != nil {
 		w.cfg.Log.Warn("repair: the queue could not be read", "error", err.Error())
 		return
@@ -161,8 +163,12 @@ func (w *Worker) RepairPass(ctx context.Context) (done, failed int) {
 		if ctx.Err() != nil || !w.stillMine(ctx) {
 			return
 		}
-		t := task{rq.Str(r[0]), rq.Str(r[1]), rq.Str(r[2]), rq.Str(r[3]), rq.Int(r[4]), rq.Int(r[5])}
-		switch err := w.do(ctx, t); err {
+		t := task{rq.Str(r[0]), rq.Str(r[1]), rq.Str(r[2]), rq.Str(r[3]), rq.Int(r[4]), rq.Int(r[5]), rq.Int(r[6])}
+		err := w.do(ctx, t)
+		if w.cfg.Hook != nil {
+			w.cfg.Hook("repair:before-settle")
+		}
+		switch err {
 		case nil:
 			w.settle(ctx, t, true, "")
 			metrics.Repair(true)
@@ -176,10 +182,14 @@ func (w *Worker) RepairPass(ctx context.Context) (done, failed int) {
 	return
 }
 
-// settle ends a task that was done (or dropped), or puts off one that failed. The row is touched only if it is the one that was read (the last operation on a key and a node wins).
+// settle ends a task that was done (or dropped), or puts off one that failed. The row is touched only if it is still the revision that was read: a task that was replaced while it was worked (by a
+// write, a delete, a check, in the same second too) is another instruction, and what was done for the old one does not close it. A statement that did not reach the database is counted and logged,
+// and the task stays in the queue to be done again, which every operation of the queue allows.
 func (w *Worker) settle(ctx context.Context, t task, ok bool, why string) {
 	if ok {
-		_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND since = ?", t.store, t.key, t.node, t.since))
+		if _, err := w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND rev = ?", t.store, t.key, t.node, t.rev)); err != nil {
+			w.cfg.Log.Warn("repair: a task that was done could not be closed", "key", t.key, "error", err.Error())
+		}
 		return
 	}
 	pause := w.cfg.RetryBase << min(t.attempts, 20)
@@ -189,8 +199,10 @@ func (w *Worker) settle(ctx context.Context, t task, ok bool, why string) {
 	if len(why) > 300 {
 		why = why[:300]
 	}
-	_, _ = w.DB.Exec(ctx, false, rq.S("UPDATE storage_repair SET attempts = attempts + 1, next_at = ?, last_error = ? WHERE store = ? AND key = ? AND node = ? AND since = ?",
-		w.now()+int64(pause/time.Second), why, t.store, t.key, t.node, t.since))
+	if _, err := w.DB.Exec(ctx, false, rq.S("UPDATE storage_repair SET attempts = attempts + 1, next_at = ?, last_error = ? WHERE store = ? AND key = ? AND node = ? AND rev = ?",
+		w.now()+int64(pause/time.Second), why, t.store, t.key, t.node, t.rev)); err != nil {
+		w.cfg.Log.Warn("repair: a task that failed could not be put off", "key", t.key, "error", err.Error())
+	}
 }
 
 // do runs one task; nil also for a task that has nothing left to do (the store, the node, the object or the upload is gone).
@@ -206,6 +218,11 @@ func (w *Worker) do(ctx context.Context, t task) error {
 	if t.op == "purgepath" { // a directory found by the reconcile, named by its path on the node
 		if node == nil {
 			return nil
+		}
+		// the reconcile read the nodes and the database at different moments, and the task waited in the queue: what a directory belongs to is asked again now, and a directory that an object, a set or an
+		// upload has become the owner of since is left alone (a generation is a random name, so the generation alone says it)
+		if live, err := w.generationInUse(ctx, t.store, t.key); err != nil || live {
+			return err // nil: dropped; an error: tried again later
 		}
 		return node.RemoveDir(ctx, t.key)
 	}
@@ -239,6 +256,29 @@ func (w *Worker) do(ctx context.Context, t task) error {
 		return m.CopyTo(ctx, node, rel, sha, size)
 	}
 	return nil
+}
+
+// generationInUse says whether the directory of blocks `dir` (a path on a node: `<segment>~<generation>`) is the generation of an object, a set of blocks or an upload that is in the database now.
+func (w *Worker) generationInUse(ctx context.Context, st, dir string) (bool, error) {
+	i := strings.LastIndexByte(dir, '~')
+	if i < 0 || i == len(dir)-1 {
+		return true, nil // not a directory of blocks: not removed
+	}
+	gen := dir[i+1:]
+	for _, q := range []string{
+		"SELECT count(*) FROM storage_objects WHERE store = ? AND generation = ?",
+		"SELECT count(*) FROM storage_sets WHERE store = ? AND generation = ?",
+		"SELECT count(*) FROM storage_uploads WHERE store = ? AND upload = ?",
+	} {
+		rows, err := w.DB.Query(ctx, rq.S(q, st, gen))
+		if err != nil {
+			return false, err
+		}
+		if len(rows) == 1 && rq.Int(rows[0][0]) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // expected is the digest and the size block n of the generation must have: from the object's row if the generation is the current one, else from the parts of the upload it belongs to.
@@ -284,9 +324,13 @@ func (w *Worker) expected(ctx context.Context, st, full, gen string, n int) (sha
 	return rq.Str(rows[0][0]), rq.Int(rows[0][1]), true, nil
 }
 
-// SweepPass removes the blocks of uploads that began more than UploadTTL ago and neither ended nor were aborted (a writer that was killed): the directory of the generation on every node, then the rows.
+// SweepPass removes the blocks of uploads that began more than UploadTTL ago and neither ended nor were aborted (a writer that was killed). An upload is first claimed: its row is deleted, in a
+// transaction with its parts, and only if the row is still there and still that old. A commit of an object requires the row in its own transaction, so from the claim on the generation cannot become
+// an object, and its blocks may go. The removal is written down for every node before it is tried (a process that dies after the claim leaves it in the queue), and the pass of repairs does what
+// a node could not do now.
 func (w *Worker) SweepPass(ctx context.Context) int {
-	rows, err := w.DB.Query(ctx, rq.S("SELECT store, key, upload FROM storage_uploads WHERE created_at < ? LIMIT 100", w.now()-int64(w.cfg.UploadTTL/time.Second)))
+	cutoff := w.now() - int64(w.cfg.UploadTTL/time.Second)
+	rows, err := w.DB.Query(ctx, rq.S("SELECT store, key, upload FROM storage_uploads WHERE created_at < ? LIMIT 100", cutoff))
 	if err != nil {
 		return 0
 	}
@@ -296,32 +340,55 @@ func (w *Worker) SweepPass(ctx context.Context) int {
 			return swept
 		}
 		st, full, up := rq.Str(r[0]), rq.Str(r[1]), rq.Str(r[2])
-		if m, err := w.Reg.Load(ctx, st); err == nil {
-			if failed := m.DeleteDir(ctx, layout.BlockDir(full, up)); len(failed) > 0 {
-				for _, n := range failed {
-					w.queuePurge(ctx, st, layout.DirKey(full, up), n.ID)
-				}
-			}
-		} else if err != store.ErrNoSuchStore {
+		m, err := w.Reg.Load(ctx, st)
+		if err != nil && err != store.ErrNoSuchStore {
 			continue // the store could not be read now: tried again at the next pass
 		}
-		if _, err := w.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", st, full, up),
-			rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", st, full, up)); err == nil {
-			swept++
+		res, err := w.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? AND created_at < ?", st, full, up, cutoff),
+			rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND (SELECT count(*) FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?) = 0", st, full, up, st, full, up))
+		if err != nil || len(res) == 0 || res[0] == 0 {
+			continue // the upload was completed or aborted meanwhile, or the database failed: nothing is claimed, nothing is removed
+		}
+		swept++
+		if m == nil { // the store is gone: there is nothing on a node to remove
+			continue
+		}
+		for _, n := range m.Nodes {
+			w.queuePurge(ctx, st, layout.DirKey(full, up), n.ID)
+		}
+		failed := map[string]bool{}
+		for _, n := range m.DeleteDir(ctx, layout.BlockDir(full, up)) {
+			failed[n.ID] = true
+		}
+		for _, n := range m.Nodes {
+			if !failed[n.ID] {
+				_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", st, layout.DirKey(full, up), n.ID))
+			}
 		}
 	}
 	return swept
 }
 
-func (w *Worker) queuePurge(ctx context.Context, st, key, node string) {
-	_, _ = w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, 'purge', ?, 0, 0, '') "+
-		"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", st, key, node, w.now()))
+func (w *Worker) queuePurge(ctx context.Context, st, key, node string) error {
+	_, err := w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, 'purge', ?, 0, 0, '') "+
+		"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", st, key, node, w.now()))
+	return w.queueFailed(err, "purge", key)
 }
 
 // queueCopy makes a `copy` task of a block a node lacks; a task that is already there is left alone, so that its pause is not lost.
-func (w *Worker) queueCopy(ctx context.Context, st, key, node string) {
-	_, _ = w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, 'copy', ?, 0, 0, '') "+
-		"ON CONFLICT(store, key, node) DO UPDATE SET op = 'copy', since = excluded.since, attempts = 0, next_at = 0, last_error = '' WHERE storage_repair.op != 'copy'", st, key, node, w.now()))
+func (w *Worker) queueCopy(ctx context.Context, st, key, node string) error {
+	_, err := w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, 'copy', ?, 0, 0, '') "+
+		"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'copy', since = excluded.since, attempts = 0, next_at = 0, last_error = '' WHERE storage_repair.op != 'copy'", st, key, node, w.now()))
+	return w.queueFailed(err, "copy", key)
+}
+
+// queueFailed counts and logs a task that could not be written down: a removal or a copy that nobody will do until a later pass or reconcile finds it again.
+func (w *Worker) queueFailed(err error, op, key string) error {
+	if err != nil {
+		metrics.QueueError()
+		w.cfg.Log.Warn("repair: a task could not be written down", "op", op, "key", key, "error", err.Error())
+	}
+	return err
 }
 
 // CheckPass takes a slice of the inventory of every store with more than one node, asks every node for the size of every block (or, in a deep check, reads it and compares its digest), and makes
@@ -436,7 +503,7 @@ func (w *Worker) TrashPass(ctx context.Context) int {
 				for _, n := range m.Nodes {
 					stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
 						"SELECT store, key || '~' || generation, ?, 'purge', ?, 0, 0, '' FROM storage_objects WHERE store = ? AND key = ? AND generation = ? AND deleted_at > 0 "+
-						"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, key, gen))
+						"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, key, gen))
 				}
 			}
 			stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ? AND generation = ? AND cid = ? AND deleted_at > 0", e.Name, key, gen, cid))
@@ -488,7 +555,7 @@ func (w *Worker) SetPass(ctx context.Context) int {
 			for _, n := range m.Nodes {
 				stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
 					"SELECT store, owner || '~' || generation, ?, 'purge', ?, 0, 0, '' FROM storage_sets WHERE store = ? AND cid = ? AND refs <= 0 "+
-					"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, cid))
+					"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, w.now(), e.Name, cid))
 			}
 			stmts = append(stmts, rq.S("DELETE FROM storage_sets WHERE store = ? AND cid = ? AND refs <= 0", e.Name, cid))
 			if _, err := w.DB.Exec(ctx, true, stmts...); err != nil {

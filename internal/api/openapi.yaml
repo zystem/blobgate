@@ -257,8 +257,9 @@ paths:
       summary: |
         write an object, or a part of a multipart upload with `?upload=<id>&part=<n>`. An object may be of any length: a body of known length up to 8 MiB is streamed to the nodes as it comes; a longer one, or one with
         no length (chunked), is cut into blocks of 8 MiB by the module, which holds one block at a time. `X-Content-SHA256` is optional for an object (the digest of the whole body: checked when sent) and required for a part.
-        `Content-Type` and `X-Blobgate-Meta-<name>` headers are kept with the object and given back. `If-None-Match: *` (create only) and `If-Match: <etag>` (replace that version) are checked before the write,
-        not as a part of it: two writers at the same moment can both pass. An object of no bytes is allowed; a part is at least one byte.
+        `Content-Type` and `X-Blobgate-Meta-<name>` headers are kept with the object and given back. `If-None-Match: *` (create only) and `If-Match: <etag>` (replace that version; a weak tag never matches) are
+        checked before the body is read and decided again in the transaction that writes: of two writers under the same condition one gets 412. A write whose copy for a node that missed a block cannot be
+        written down is refused with 503 `database_unavailable`. An object of no bytes is allowed; a part is at least one byte.
       security: [{coreToken: []}]
       parameters:
         - {name: X-Content-SHA256, in: header, schema: {type: string, pattern: "^[0-9a-f]{64}$"}, description: "required for a part, optional for an object"}

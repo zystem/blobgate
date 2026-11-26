@@ -67,3 +67,15 @@ func FuzzOpen(f *testing.F) {
 	f.Add(s)
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = c.Open("k", "g", 0, data) })
 }
+
+// Two spellings of one number that an older version of the module saved: one key if the texts are the same, an error if they are not, and the same at every start.
+func TestKeyIdAliasesAreDeterministic(t *testing.T) {
+	if _, err := NewCipher(1, map[string]string{"1": "the text of the key", "01": "the text of the key"}); err != nil {
+		t.Fatalf("one text under two spellings: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		if _, err := NewCipher(1, map[string]string{"1": "the text of the key", "01": "another text for the key"}); err == nil {
+			t.Fatal("two texts for one id were accepted: which one is the key is left to the order of a map")
+		}
+	}
+}

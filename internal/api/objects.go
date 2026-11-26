@@ -169,11 +169,19 @@ func (s *Server) noRoom(ctx context.Context, m *store.Mirror, need int64) *herr 
 }
 
 // queue puts what a node missed into the repair queue; `key` is a layout.BlockKey or layout.DirKey (the last operation on a key and a node is the one that stands).
-func (s *Server) queue(ctx context.Context, st, key, op string, nodes []*store.Node) {
+func (s *Server) queue(ctx context.Context, st, key, op string, nodes []*store.Node) error {
+	var first error
 	for _, n := range nodes {
-		_, _ = s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, ?, ?, 0, 0, '') "+
-			"ON CONFLICT(store, key, node) DO UPDATE SET op = excluded.op, since = excluded.since, attempts = 0, next_at = 0, last_error = ''", st, key, n.ID, op, s.now()))
+		if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, ?, ?, 0, 0, '') "+
+			"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = excluded.op, since = excluded.since, attempts = 0, next_at = 0, last_error = ''", st, key, n.ID, op, s.now())); err != nil {
+			metrics.QueueError()
+			s.log.Warn("a repair task could not be written down", "op", op, "key", key, "error", err.Error())
+			if first == nil {
+				first = err
+			}
+		}
 	}
+	return first
 }
 
 // putFailure is the answer to a block that could not be written: 507 with words when a node is out of room (also for nodes that cannot say beforehand how much room they have),
@@ -254,7 +262,12 @@ func (s *Server) writeBlock(ctx context.Context, m *store.Mirror, full, gen stri
 		s.purge(ctx, m, full, gen)
 		return written{}, e
 	}
-	s.queue(ctx, m.Name, layout.BlockKey(full, gen, n), "copy", w.failed)
+	// a block that a node missed is written down for the repair before the write goes on: when that cannot be done the object would be acknowledged with fewer copies than the store means to keep and
+	// nothing would remember which, so the write is refused (the client tries again) and the blocks removed
+	if err := s.queue(ctx, m.Name, layout.BlockKey(full, gen, n), "copy", w.failed); err != nil {
+		s.purge(ctx, m, full, gen)
+		return written{}, &herr{503, "database_unavailable", "a copy for a node that missed the block could not be written down: " + err.Error()}
+	}
 	return w, nil
 }
 
@@ -420,7 +433,7 @@ func (s *Server) purgeTasks(m *store.Mirror, full, except string) []rq.Stmt {
 	for _, n := range m.Nodes {
 		out = append(out, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
 			"SELECT store, key || '~' || generation, ?, 'purge', ?, 0, 0, '' FROM storage_objects WHERE store = ? AND key = ? AND generation != '' AND generation != ? "+
-			"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, s.now(), m.Name, full, except))
+			"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", n.ID, s.now(), m.Name, full, except))
 	}
 	return out
 }
@@ -446,7 +459,7 @@ func (s *Server) releaseSet(st, full string, trash bool) rq.Stmt {
 // commit makes the generation the object: one transaction, which is the whole of "fixing" an object, and which also writes down the removal of the generation it replaces. The removal is then tried
 // at once; what a node could not do stays in the queue. In a store with deduplication the blocks are the object's own until this transaction: it either makes them a set (the first object with these bytes)
 // or takes a reference on the set that is there and writes down the removal of the blocks just written. A writer never relies on a set that may be removed: the set is found or made in the same transaction.
-func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks, plain []string, digest, md5sum string, enc uint32, om objMeta) error {
+func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, size, blockSize int64, blocks, plain []string, digest, md5sum string, enc uint32, om objMeta, cond condition) error {
 	old, err := s.getRowAny(ctx, m.Name, full)
 	if err != nil {
 		return err
@@ -463,7 +476,11 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 	}
 	cid := ""
 	s.at("commit:before")
-	stmts := []rq.Stmt{s.releaseSet(m.Name, full, false)}
+	// the upload must still be there: the sweep of expired uploads claims one by deleting its row, and from then on it may remove the blocks. Without this the transaction would publish a generation
+	// whose blocks are being deleted. The statement fails (NOT NULL of the guard table) and rqlite rolls the transaction back.
+	stmts := []rq.Stmt{rq.S("INSERT INTO storage_guard (upload, cond) SELECT NULL, 1 WHERE NOT EXISTS (SELECT 1 FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?)", m.Name, full, gen)}
+	stmts = append(stmts, cond.guard(m.Name, full)...) // and the object must still be as the If-Match or If-None-Match found it: the decision is here, in the transaction that writes
+	stmts = append(stmts, s.releaseSet(m.Name, full, false))
 	stmts = append(stmts, s.purgeTasks(m, full, gen)...)
 	ownGen, ownBlocks, ownSize, ownEnc := gen, string(bj), blockSize, enc
 	if dedup {
@@ -475,7 +492,7 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 		for _, n := range m.Nodes {
 			stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
 				"SELECT store, ?, ?, 'purge', ?, 0, 0, '' FROM storage_sets WHERE store = ? AND cid = ? AND NOT (owner = ? AND generation = ?) "+
-				"ON CONFLICT(store, key, node) DO UPDATE SET op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", layout.DirKey(full, gen), n.ID, s.now(), m.Name, cid, full, gen))
+				"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", layout.DirKey(full, gen), n.ID, s.now(), m.Name, cid, full, gen))
 		}
 		ownGen, ownBlocks, ownSize, ownEnc = "", "[]", 0, 0
 	}
@@ -487,6 +504,12 @@ func (s *Server) commit(ctx context.Context, m *store.Mirror, full, gen string, 
 		rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
+		switch {
+		case strings.Contains(err.Error(), "storage_guard.upload"):
+			return errUploadGone
+		case strings.Contains(err.Error(), "storage_guard.cond"):
+			return errPreconditionFailed
+		}
 		return err
 	}
 	s.at("commit:after-tx")
@@ -522,32 +545,62 @@ func (s *Server) purge(ctx context.Context, m *store.Mirror, full, gen string) {
 	s.queue(ctx, m.Name, layout.DirKey(full, gen), "purge", m.DeleteDir(ctx, layout.BlockDir(full, gen)))
 }
 
-// precondition checks If-Match and If-None-Match of a write or a delete against the object as it is now. It is a check made before the write, not part of it: two writers at the same moment can both pass.
-func (s *Server) precondition(ctx context.Context, w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) bool {
+// condition is what a write or a delete that carried If-Match or If-None-Match was told about the object when the header was checked: that there was none, or the version it was. The check is made
+// early, for the answer without a transfer of the body; the decision is the transaction's: it carries a guard that fails unless the object is still as it was here, so two writers under the same
+// condition (create only, or the same version) cannot both win.
+type condition struct {
+	set     bool
+	existed bool
+	o       *objectRow
+}
+
+// precondition checks If-Match and If-None-Match of a write or a delete against the object as it is now, and returns the condition for the transaction that writes. An If-Match needs the strong
+// comparison of the tags (a weak tag, `W/"..."`, never matches it); If-None-Match takes the weak one (RFC 9110, 13.1).
+func (s *Server) precondition(ctx context.Context, w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) (condition, bool) {
 	im, inm := r.Header.Get("If-Match"), r.Header.Get("If-None-Match")
 	if im == "" && inm == "" {
-		return true
+		return condition{}, true
 	}
 	o, err := s.getRow(ctx, m.Name, full)
 	if err != nil {
 		fail(w, err)
-		return false
+		return condition{}, false
 	}
-	if inm == "*" && o != nil || im != "" && im != "*" && (o == nil || !etagMatches(im, o.etag())) || im == "*" && o == nil {
+	if inm == "*" && o != nil || im != "" && im != "*" && (o == nil || !etagMatches(im, o.etag(), true)) || im == "*" && o == nil {
 		problem(w, 412, "precondition_failed", "the object is not as If-Match or If-None-Match says")
-		return false
+		return condition{}, false
 	}
-	if inm != "" && inm != "*" && o != nil && etagMatches(inm, o.etag()) {
+	if inm != "" && inm != "*" && o != nil && etagMatches(inm, o.etag(), false) {
 		problem(w, 412, "precondition_failed", "the object is the version If-None-Match names")
-		return false
+		return condition{}, false
 	}
-	return true
+	return condition{set: true, existed: o != nil, o: o}, true
 }
 
-// etagMatches says whether a list of entity tags (as in If-Match) holds the tag.
-func etagMatches(list, tag string) bool {
+// guard is the statement that stops the transaction unless the object is as the condition found it: still absent, or still the same version (the same generation or set, the same bytes by their MD5
+// and size, fixed at the same moment). Nothing when there was no condition.
+func (c condition) guard(st, full string) []rq.Stmt {
+	switch {
+	case !c.set:
+		return nil
+	case !c.existed:
+		return []rq.Stmt{rq.S("INSERT INTO storage_guard (upload, cond) SELECT 1, NULL WHERE EXISTS (SELECT 1 FROM storage_objects WHERE store = ? AND key = ? AND deleted_at = 0)", st, full)}
+	}
+	return []rq.Stmt{rq.S("INSERT INTO storage_guard (upload, cond) SELECT 1, NULL WHERE NOT EXISTS (SELECT 1 FROM storage_objects WHERE store = ? AND key = ? AND deleted_at = 0 "+
+		"AND generation = ? AND cid = ? AND md5 = ? AND size = ? AND written_at = ?)", st, full, c.o.generation, c.o.cid, c.o.md5, c.o.size, c.o.written)}
+}
+
+// errPreconditionFailed is a write or a delete whose condition held when it was checked and does not hold in the transaction: another writer got there first.
+var errPreconditionFailed = errors.New("the object changed while the write was going on, and is not as If-Match or If-None-Match says")
+
+// etagMatches says whether a list of entity tags (as in If-Match) holds the tag. With strong, a weak tag in the list (`W/"..."`) does not match.
+func etagMatches(list, tag string, strong bool) bool {
 	for _, t := range strings.Split(list, ",") {
-		if strings.TrimPrefix(strings.TrimSpace(t), "W/") == tag {
+		t = strings.TrimSpace(t)
+		if weak := strings.HasPrefix(t, "W/"); weak && strong {
+			continue
+		}
+		if strings.TrimPrefix(t, "W/") == tag {
 			return true
 		}
 	}
@@ -573,7 +626,8 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		problem(w, 413, "too_large", fmt.Sprintf("an object is at most %d bytes", s.cfg.MaxObject))
 		return
 	}
-	if !s.precondition(ctx, w, r, m, full) {
+	cond, ok := s.precondition(ctx, w, r, m, full)
+	if !ok {
 		return
 	}
 	need := size
@@ -619,14 +673,14 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 		total, blocks, plain, enc, digest = size, []string{w0.stored}, []string{w0.plain}, w0.enc, w0.plain
 		md5sum = hex.EncodeToString(sum5.Sum(nil))
 	default:
-		if err := s.hold(ctx, true); err != nil { // the buffer of a block is held for as long as the writer takes to send it
+		if err := s.hold(ctx, heldWrite, true); err != nil { // the buffer of a block is held for as long as the writer takes to send it
 			_, _ = s.DB.Exec(context.WithoutCancel(ctx), false, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
 			if errors.Is(err, errBusy) {
 				busy(w)
 			}
 			return // or the client has gone
 		}
-		defer s.unhold()
+		defer s.unhold(heldWrite)
 		buf := make([]byte, BlockSize)
 		whole := sha256.New()
 		for n := 0; ; n++ {
@@ -683,8 +737,14 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, m *store.Mirr
 	if size > 0 && size <= BlockSize {
 		blockSize = size
 	}
-	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, plain, digest, md5sum, enc, om); err != nil {
-		s.purge(ctx, m, full, gen)
+	if err := s.commit(ctx, m, full, gen, total, blockSize, blocks, plain, digest, md5sum, enc, om, cond); err != nil {
+		// the blocks are removed only when the generation is surely not the object's: an error of the database says nothing of whether the transaction was applied (a change of leader answers with an
+		// error after the commit), and removing the blocks of a generation that is live would lose the object
+		if errors.Is(err, errUploadGone) || s.surelyNotCommitted(ctx, m, full, gen) {
+			s.purge(ctx, m, full, gen)
+			_, _ = s.DB.Exec(context.WithoutCancel(ctx), true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen),
+				rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, gen))
+		}
 		fail(w, err)
 		return
 	}
@@ -778,7 +838,10 @@ func (s *Server) putPart(w http.ResponseWriter, r *http.Request, m *store.Mirror
 		herr.write(w)
 		return
 	}
-	s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", wr.failed)
+	if err := s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", wr.failed); err != nil {
+		fail(w, err) // the part is not acknowledged: the client sends it again, which writes the block again
+		return
+	}
 	s.at("part:after-block")
 	if _, err := s.DB.Exec(ctx, false, rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at, stored_sha256, stored_size, enc, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
 		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at, stored_sha256 = excluded.stored_sha256, stored_size = excluded.stored_size, enc = excluded.enc, md5 = excluded.md5",
@@ -846,6 +909,10 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 	ctx := r.Context()
 	if !validUpload(upload) {
 		problem(w, 400, "invalid_request", "no such upload")
+		return
+	}
+	cond, ok := s.precondition(ctx, w, r, m, full) // If-None-Match: * of a completion is create-only here too, decided in the transaction of the commit
+	if !ok {
 		return
 	}
 	data, err := io.ReadAll(io.LimitReader(r.Body, smallBody+1))
@@ -938,7 +1005,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		sum := md5.Sum(partsMD5) // #nosec G401 -- see the import
 		etagMD5 = hex.EncodeToString(sum[:]) + "-" + strconv.Itoa(len(given))
 	}
-	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, "", etagMD5, enc, om); err != nil {
+	if err := s.commit(ctx, m, full, upload, total, blockSize, blocks, plain, "", etagMD5, enc, om, cond); err != nil {
 		fail(w, err)
 		return
 	}
@@ -963,7 +1030,8 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request, m *store.Mirror, 
 // deleteObject removes an object. With a store that has a trash (soft_delete_seconds) it is hidden and kept for that long, and can be restored; `?purge` removes it at once, from the trash too.
 func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.Mirror, full string) {
 	ctx := r.Context()
-	if !s.precondition(ctx, w, r, m, full) {
+	cond, ok := s.precondition(ctx, w, r, m, full)
+	if !ok {
 		return
 	}
 	old, err := s.getRowAny(ctx, m.Name, full)
@@ -975,6 +1043,7 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.M
 		writeJSON(w, 200, map[string]any{"deleted": true})
 		return
 	}
+	s.at("delete:before-write")
 	if m.SoftDelete > 0 && !has(r, "purge") {
 		if old.deleted == 0 {
 			// the version that was read: its set (deduplication) or its own generation
@@ -982,8 +1051,20 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.M
 			if old.cid != "" {
 				guard, arg = "cid = ?", old.cid
 			}
-			if _, err := s.DB.Exec(ctx, false, rq.S("UPDATE storage_objects SET deleted_at = ? WHERE store = ? AND key = ? AND deleted_at = 0 AND "+guard, s.now(), m.Name, full, arg)); err != nil {
+			// with a condition the statement is also part of the guard: it changes the row only if the row is the version the condition found
+			q := "UPDATE storage_objects SET deleted_at = ? WHERE store = ? AND key = ? AND deleted_at = 0 AND " + guard
+			args := []any{s.now(), m.Name, full, arg}
+			if cond.set && cond.existed {
+				q += " AND generation = ? AND cid = ? AND md5 = ? AND size = ? AND written_at = ?"
+				args = append(args, cond.o.generation, cond.o.cid, cond.o.md5, cond.o.size, cond.o.written)
+			}
+			n, err := s.DB.Exec(ctx, false, rq.S(q, args...))
+			if err != nil {
 				fail(w, err)
+				return
+			}
+			if cond.set && (len(n) != 1 || n[0] == 0) {
+				problem(w, 412, "precondition_failed", errPreconditionFailed.Error())
 				return
 			}
 			s.at("delete:after-trash")
@@ -992,10 +1073,15 @@ func (s *Server) deleteObject(w http.ResponseWriter, r *http.Request, m *store.M
 		return
 	}
 	// the removal of the blocks is written down in the transaction that removes the row, so that a process that dies between the two leaves nothing that nobody knows of
-	stmts := []rq.Stmt{s.releaseSet(m.Name, full, false)} // a set that nothing points to any more is removed by the worker
+	stmts := cond.guard(m.Name, full)
+	stmts = append(stmts, s.releaseSet(m.Name, full, false)) // a set that nothing points to any more is removed by the worker
 	stmts = append(stmts, s.purgeTasks(m, full, "")...)
 	stmts = append(stmts, rq.S("DELETE FROM storage_objects WHERE store = ? AND key = ?", m.Name, full))
 	if _, err := s.DB.Exec(ctx, true, stmts...); err != nil {
+		if strings.Contains(err.Error(), "storage_guard.cond") {
+			problem(w, 412, "precondition_failed", errPreconditionFailed.Error())
+			return
+		}
 		fail(w, err)
 		return
 	}
@@ -1064,11 +1150,11 @@ func parseRange(h string) (a, b int64, ok bool) {
 
 // notModified answers If-None-Match / If-Match of a read: it returns true when the answer has been given (304 or 412).
 func notModified(w http.ResponseWriter, r *http.Request, o *objectRow) bool {
-	if im := r.Header.Get("If-Match"); im != "" && im != "*" && !etagMatches(im, o.etag()) {
+	if im := r.Header.Get("If-Match"); im != "" && im != "*" && !etagMatches(im, o.etag(), true) {
 		problem(w, 412, "precondition_failed", "the object is not the version If-Match names")
 		return true
 	}
-	if inm := r.Header.Get("If-None-Match"); inm != "" && (inm == "*" || etagMatches(inm, o.etag())) {
+	if inm := r.Header.Get("If-None-Match"); inm != "" && (inm == "*" || etagMatches(inm, o.etag(), false)) {
 		o.setHeaders(w)
 		w.WriteHeader(http.StatusNotModified)
 		return true
@@ -1143,15 +1229,30 @@ func (s *Server) head(w http.ResponseWriter, r *http.Request, m *store.Mirror, f
 	w.WriteHeader(200)
 }
 
+// errUploadGone is a commit of an upload whose row is not there any more: the sweep took it (it was older than BLOBGATE_UPLOAD_TTL_SECONDS) or it was aborted.
+var errUploadGone = errors.New("the upload ended, was aborted, or was swept for being older than the time an upload may last")
+
 // errBusy is a call that waited for a place to hold a block and found none.
 var errBusy = errors.New("the module holds as many blocks for clients as it may")
 
-// hold takes a place for one block that is held in memory for a client. The first block of a call waits a short time and then gives up (the caller answers 503 with Retry-After); one that is on its way
-// waits for as long as the client does.
-func (s *Server) hold(ctx context.Context, first bool) error {
-	select {
-	case s.held <- struct{}{}:
-		return nil
+// The kinds of call that hold a block in memory for a client. Each may take at most three quarters of the places (BLOBGATE_HELD_BLOCKS), so that a flood of one kind (slow readers) cannot keep the
+// other (writers, parts) out for as long as it lasts: the last quarter is for the other kind.
+const (
+	heldRead  = 0 // a block of a read, until it is sent
+	heldWrite = 1 // the buffer of a write of many blocks or of no known size, and a part through the S3 door, until it is on the nodes
+)
+
+// hold takes a place for one block that is held in memory for a client: one of the kind, and one of the total. The first block of a call waits a short time and then gives up (the caller answers 503 with
+// Retry-After); one that is on its way waits for as long as the client does.
+func (s *Server) hold(ctx context.Context, kind int, first bool) error {
+	select { // nothing to wait for: the common case
+	case s.heldKind[kind] <- struct{}{}:
+		select {
+		case s.held <- struct{}{}:
+			return nil
+		default:
+			<-s.heldKind[kind]
+		}
 	default:
 	}
 	var timeout <-chan time.Time
@@ -1161,16 +1262,25 @@ func (s *Server) hold(ctx context.Context, first bool) error {
 		timeout = t.C
 	}
 	select {
-	case s.held <- struct{}{}:
-		return nil
+	case s.heldKind[kind] <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timeout:
 		return errBusy
 	}
+	select {
+	case s.held <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		<-s.heldKind[kind]
+		return ctx.Err()
+	case <-timeout:
+		<-s.heldKind[kind]
+		return errBusy
+	}
 }
 
-func (s *Server) unhold() { <-s.held }
+func (s *Server) unhold(kind int) { <-s.held; <-s.heldKind[kind] }
 
 // holdWait is how long the first block of a call waits for a place.
 var holdWait = 30 * time.Second
@@ -1211,7 +1321,7 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 		lo, hi := max(a-start, 0), min(b-start+1, int64(len(data)))
 		return data[lo:hi]
 	}
-	if err := s.hold(r.Context(), true); err != nil {
+	if err := s.hold(r.Context(), heldRead, true); err != nil {
 		if errors.Is(err, errBusy) {
 			busy(w)
 		}
@@ -1219,7 +1329,7 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 	}
 	data, err := readBlock(first)
 	if err != nil {
-		s.unhold()
+		s.unhold(heldRead)
 		fail(w, err)
 		return
 	}
@@ -1234,15 +1344,15 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 	for i := first; ; i++ {
 		_, werr := w.Write(slice(i, data))
 		data = nil
-		s.unhold() // the block is out of memory once it is sent: a client that is slow holds a place for as long as it takes the block, and not a slot of reads
+		s.unhold(heldRead) // the block is out of memory once it is sent: a client that is slow holds a place for as long as it takes the block, and not a slot of reads
 		if werr != nil || i == last {
 			return
 		}
-		if err := s.hold(r.Context(), false); err != nil {
+		if err := s.hold(r.Context(), heldRead, false); err != nil {
 			panic(http.ErrAbortHandler)
 		}
 		if data, err = readBlock(i + 1); err != nil {
-			s.unhold()
+			s.unhold(heldRead)
 			// after the first piece an error cannot be a status: the connection is cut, and the reader, who gets less than it asked for, knows
 			panic(http.ErrAbortHandler)
 		}
@@ -1263,4 +1373,16 @@ func scopeOf(m *store.Mirror, full string) string {
 		return ""
 	}
 	return tenantOfKey(full)
+}
+
+// surelyNotCommitted says whether the database was asked and the generation is neither the object's nor a set's: only then are its blocks removed after a commit that answered with an error. When the
+// database cannot be asked the blocks stay, and the sweep (an upload row older than the time limit) or the reconcile removes them.
+func (s *Server) surelyNotCommitted(ctx context.Context, m *store.Mirror, full, gen string) bool {
+	ctx = context.WithoutCancel(ctx)
+	rows, err := s.DB.Query(ctx, rq.S("SELECT count(*) FROM storage_objects WHERE store = ? AND key = ? AND generation = ?", m.Name, full, gen))
+	if err != nil || len(rows) != 1 || rq.Int(rows[0][0]) != 0 {
+		return false
+	}
+	rows, err = s.DB.Query(ctx, rq.S("SELECT count(*) FROM storage_sets WHERE store = ? AND owner = ? AND generation = ?", m.Name, full, gen))
+	return err == nil && len(rows) == 1 && rq.Int(rows[0][0]) == 0
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -9,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -41,12 +43,22 @@ type Cipher struct {
 // NewCipher makes the cipher of a store from its key ids and the key texts.
 func NewCipher(current uint32, keys map[string]string) (*Cipher, error) {
 	c := &Cipher{Current: current, keys: map[uint32][]byte{}}
-	for id, text := range keys {
+	ids := make([]string, 0, len(keys))
+	for id := range keys {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // the same result at every start: the order of a map is not one
+	for _, id := range ids {
 		n, err := strconv.ParseUint(id, 10, 32)
 		if err != nil || n == 0 {
 			return nil, fmt.Errorf("a key id is a number from 1: %q", id)
 		}
-		m := sha256.Sum256([]byte("blobgate/block/v1|" + text))
+		m := sha256.Sum256([]byte("blobgate/block/v1|" + keys[id]))
+		// two spellings of one number ("1" and "01", kept by a store that was saved before the check of the ids) are one key if the texts are the same, and an error if they are not: which of two
+		// texts is the key for the id that the ciphertext names is not a question to be left to the order of a map
+		if prev, dup := c.keys[uint32(n)]; dup && !bytes.Equal(prev, m[:]) {
+			return nil, fmt.Errorf("key id %d is given twice (%q and another spelling) with different texts: keep one of them", n, id)
+		}
 		c.keys[uint32(n)] = m[:]
 	}
 	if current != 0 && c.keys[current] == nil {

@@ -129,8 +129,9 @@ func (c Config) Check(s Secrets) string {
 			return "encryption.key_id is the id of a key in encryption.keys (ids are numbers from 1)"
 		}
 		for id, k := range s.EncKeys {
-			if n, err := strconv.ParseUint(id, 10, 32); err != nil || n == 0 {
-				return fmt.Sprintf("a key id is a number from 1: %q", id)
+			// the id is written in one way only: "1" and "01" are the same number, and a map of keys that holds both would have the program pick one of two key texts for the id that ciphertext names
+			if n, err := strconv.ParseUint(id, 10, 32); err != nil || n == 0 || strconv.FormatUint(n, 10) != id {
+				return fmt.Sprintf("a key id is a number from 1, written in decimal with no sign and no leading zeros: %q", id)
 			}
 			if !printable(k, 16, 256) {
 				return "a key is 16..256 printable characters"

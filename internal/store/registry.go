@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -148,6 +149,9 @@ func (r *Registry) Save(ctx context.Context, name string, cfg Config, sec Secret
 	}
 	if why := cfg.Check(sec); why != "" {
 		return why, nil
+	}
+	if why, err := r.keysStayTheSame(ctx, name, sec); why != "" || err != nil {
+		return why, err
 	}
 	cfg.Layout = CurrentLayout
 	cj, _ := json.Marshal(cfg)
@@ -400,4 +404,36 @@ func (r *Registry) rowCached(ctx context.Context, name string) (*rowCache, error
 	r.rows[name] = c
 	r.mu.Unlock()
 	return &c, nil
+}
+
+// keysStayTheSame refuses a change of the keys of a store that would make what is sealed unreadable: the text of a key that was given before changed under the same id (the ciphertext names the id, not
+// the text), or a key dropped that an object, a set of blocks or a part of an upload is sealed with. A key is rotated by adding a new id and making it the current one; the old one stays until
+// nothing is sealed with it and no backup of the blocks is wanted any more.
+func (r *Registry) keysStayTheSame(ctx context.Context, name string, sec Secrets) (string, error) {
+	rows, err := r.DB.Query(ctx, rq.S("SELECT secret FROM storage_stores WHERE name = ?", name))
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil // a new store
+	}
+	var old Secrets
+	if plain, err := seal.Open(r.Key, name, rq.Str(rows[0][0])); err == nil && json.Unmarshal([]byte(plain), &old) == nil {
+		for id, text := range old.EncKeys {
+			if now, ok := sec.EncKeys[id]; ok && now != text {
+				return fmt.Sprintf("encryption key %s is in the store already with another text: a key is rotated by adding a new id, not by changing the text of one that was used", id), nil
+			}
+		}
+	}
+	used, err := r.DB.Query(ctx, rq.S("SELECT enc FROM storage_objects WHERE store = ? AND enc != 0 UNION SELECT enc FROM storage_sets WHERE store = ? AND enc != 0 UNION SELECT enc FROM storage_parts WHERE store = ? AND enc != 0", name, name, name))
+	if err != nil {
+		return "", err
+	}
+	for _, u := range used {
+		id := strconv.FormatInt(rq.Int(u[0]), 10)
+		if sec.EncKeys[id] == "" {
+			return fmt.Sprintf("encryption key %s is dropped, and blocks of the store are sealed with it: they could not be read; keep it in encryption.keys", id), nil
+		}
+	}
+	return "", nil
 }
