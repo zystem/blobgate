@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-27
+
 ### Security
 * **An error no longer tells a caller about the inside.** The detail of a failure of the database or of a node carried its text: hosts, paths, node ids, the address of rqlite; `/readyz`, which asks for no token, did too. A caller now gets what kind of failure it was and `(ref <id>)`; the log line with that `ref` has the whole text, with the passwords and tokens of URLs taken out. A `507 store_full` no longer names the nodes.
 * **S3: one answer for a wrong signature and for an access key that is no tenant** (`403 SignatureDoesNotMatch`, and the same work is done for both). `InvalidAccessKeyId` is not answered any more.
