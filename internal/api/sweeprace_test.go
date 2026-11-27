@@ -164,3 +164,71 @@ func TestPurgepathAsksAgainWhoOwnsTheDirectory(t *testing.T) {
 		}
 	}
 }
+
+// The same decision with deduplication, between two replicas of the module, and when the worker dies after it has claimed the upload.
+func TestSweepWithDedupAcrossReplicasAndAWorkerThatDies(t *testing.T) {
+	a := newRig(t, nil)
+	a.dedupStore("tenant", 0, "")
+	b := a.replica()
+	ctx := context.Background()
+	body := pattern(BlockSize + 321)
+	if code, d := a.put("acme/first", body); code != 200 { // the set that the second write would join
+		t.Fatalf("put: %d %s", code, d)
+	}
+	held := len(files(a.nodes[0]))
+
+	// the write is on replica a, the sweep that takes its upload runs on replica b in the middle of the commit
+	w := maint.New(maint.Config{HolderID: "b", UploadTTL: time.Hour, Now: func() time.Time { return time.Now().Add(2 * time.Hour) }}, b.dbc, b.s.Reg)
+	if ok, _ := w.Lease(ctx, "repair"); !ok {
+		t.Fatal("lease")
+	}
+	a.s.cfg.CrashAt = func(p string) {
+		if p == "commit:before" {
+			w.SweepPass(ctx)
+		}
+	}
+	if code, d := a.put("acme/second", body); code != 404 {
+		t.Fatalf("a write of bytes the store has, swept at its commit: %d %s", code, d)
+	}
+	a.s.cfg.CrashAt = nil
+	if n := a.count("storage_objects"); n != 1 || len(files(a.nodes[0])) != held {
+		t.Fatalf("%d objects, node 1 holds %v", n, files(a.nodes[0]))
+	}
+	if code, got := b.get("acme/first", 0, len(body)-1); (code != 200 && code != 206) || !bytes.Equal(got, body) {
+		t.Fatalf("the object that shares the bytes: %d", code)
+	}
+
+	// the worker dies between the claim and the removal: what it left is written down, and the next worker removes it
+	id := b.newUpload("acme/dead")
+	if code, d := b.sendPart("acme/dead", id, "1", pattern(5000)); code != 200 {
+		t.Fatalf("part: %d %s", code, d)
+	}
+	dying := a.worker("dying", func(c *maint.Config) {
+		c.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+		c.Hook = func(p string) {
+			if p == "sweep:claimed" && len(files(a.nodes[0])) > held {
+				panic("the worker dies")
+			}
+		}
+	})
+	_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_lease"))
+	if ok, _ := dying.Lease(ctx, "repair"); !ok {
+		t.Fatal("lease")
+	}
+	func() {
+		defer func() { _ = recover() }()
+		dying.SweepPass(ctx)
+	}()
+	if len(files(a.nodes[0])) == held {
+		t.Fatal("the worker did not die before the removal")
+	}
+	_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_lease"))
+	next := a.worker("next", nil)
+	if ok, _ := next.Lease(ctx, "repair"); !ok {
+		t.Fatal("lease")
+	}
+	next.Pass(ctx)
+	if f := files(a.nodes[0]); len(f) != held {
+		t.Fatalf("blocks that nothing remembers stay after a dead worker: %v", f)
+	}
+}
