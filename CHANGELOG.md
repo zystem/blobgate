@@ -5,6 +5,8 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-28
+
 ### Security
 * **An abort no longer removes the blocks of a completed upload.** `DELETE ?upload=<id>` (S3: AbortMultipartUpload) removed the directory of the upload without asking whether it was still one: after a completion those blocks are the object's, so the object was lost on every node (with `dedup`, every object that shares them). An abort at the same moment as the completion could acknowledge the completion and remove its blocks. An abort now claims the upload first, in one transaction, and removes blocks only when it got it. **All releases up to 0.13.0 have this.**
 * A sweep that died between claiming an expired upload and writing down the removal left blocks that nothing remembered; the removal is now written down in the transaction of the claim.

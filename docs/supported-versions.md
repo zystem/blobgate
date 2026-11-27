@@ -5,16 +5,17 @@ Since 0.12.0; before it the previous minor release was said to get High and Crit
 
 | Release | Date | Status |
 |---|---|---|
-| **0.13.0** | 2026-11-27 | supported: the latest |
-| 0.12.0 | 2026-11-26 | not supported: update to 0.13.0 |
-| 0.11.6 | 2026-11-21 | not supported: update to 0.13.0 |
-| 0.11.5 | 2026-11-20 | not supported: update to 0.13.0 |
-| 0.11.4 | 2026-11-20 | not supported: update to 0.13.0 |
-| 0.11.3 | 2026-11-20 | not supported: update to 0.13.0 |
-| 0.11.2 | 2026-11-20 | not supported: update to 0.13.0 |
-| 0.11.1 | 2026-11-19 | not supported: update to 0.13.0 |
-| 0.11.0 | 2026-11-19 | not supported: update to 0.13.0 |
-| 0.10.0 | 2026-11-18 | not supported: update to 0.13.0 |
+| **0.13.1** | 2026-11-28 | supported: the latest |
+| 0.13.0 | 2026-11-27 | not supported: update to 0.13.1 |
+| 0.12.0 | 2026-11-26 | not supported: update to 0.13.1 |
+| 0.11.6 | 2026-11-21 | not supported: update to 0.13.1 |
+| 0.11.5 | 2026-11-20 | not supported: update to 0.13.1 |
+| 0.11.4 | 2026-11-20 | not supported: update to 0.13.1 |
+| 0.11.3 | 2026-11-20 | not supported: update to 0.13.1 |
+| 0.11.2 | 2026-11-20 | not supported: update to 0.13.1 |
+| 0.11.1 | 2026-11-19 | not supported: update to 0.13.1 |
+| 0.11.0 | 2026-11-19 | not supported: update to 0.13.1 |
+| 0.10.0 | 2026-11-18 | not supported: update to 0.13.1 |
 | 0.9.0 | 2026-11-18 | not supported (since 2026-11-19) |
 | 0.8.0 | 2026-11-18 | not supported: update |
 | 0.7.0 | 2026-11-17 | not supported: update |

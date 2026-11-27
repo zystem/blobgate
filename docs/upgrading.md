@@ -66,3 +66,5 @@ Run on 2026-11-26 with this code: the tests of the repository, the AWS CLI, boto
 * The schema gains a column (`storage_guard.quota`) and indexes by generation at start; nothing is to be done by hand, but making the indexes on a large inventory takes a while. During a rolling upgrade an older replica still treats quotas as soft. After `blobgate backup restore` of an older backup, restart the replicas.
 
 Run on 2026-11-27 on one machine: 0.12.0 and this code side by side on one database and two local nodes (each reads what the other wrote, an upload begun on 0.12.0 is completed by the new one). Not run: an upgrade in a cluster, remote backends, the S3 clients other than the AWS CLI in that check, the Ceph tests.
+
+**0.13.1** fixes a defect that loses data: an abort of an upload that had been completed removed the object's blocks ([../CHANGELOG.md](../CHANGELOG.md)). Update every replica as soon as you can; a replica of an older version still does it. Nothing stored or set has to change. An object that was lost this way is not brought back by the update.
