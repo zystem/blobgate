@@ -27,7 +27,7 @@ type Config struct {
 	DeepBytesPS int64         // the most the deep check reads in a second (0: no limit)
 	LeaseFor    time.Duration // how long a hold lasts without being renewed (120 s)
 	Now         func() time.Time
-	Hook        func(point string) // for tests: called at "repair:before-settle", between the work of a task and the closing of it
+	Hook        func(point string) // for tests: called at "repair:before-settle", between the work of a task and the closing of it, and at "sweep:claimed", between the claim of an upload and the removal of its blocks
 	Log         *slog.Logger
 }
 
@@ -344,10 +344,13 @@ func (w *Worker) SweepPass(ctx context.Context) int {
 		if err != nil && err != store.ErrNoSuchStore {
 			continue // the store could not be read now: tried again at the next pass
 		}
-		if !w.claimUpload(ctx, st, full, up, cutoff) {
+		if !w.claimUpload(ctx, m, st, full, up, cutoff) {
 			continue
 		}
 		swept++
+		if w.cfg.Hook != nil {
+			w.cfg.Hook("sweep:claimed")
+		}
 		if m != nil { // else the store is gone: there is nothing on a node to remove
 			w.removeClaimed(ctx, m, st, full, up)
 		}
@@ -355,20 +358,28 @@ func (w *Worker) SweepPass(ctx context.Context) int {
 	return swept
 }
 
-// claimUpload takes an upload that is still old enough away from the writers: its row goes, and with it the right to complete it. It says false when the upload was completed or aborted meanwhile, or the
-// database failed: nothing is claimed then, and nothing may be removed.
-func (w *Worker) claimUpload(ctx context.Context, st, full, up string, cutoff int64) bool {
-	res, err := w.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? AND created_at < ?", st, full, up, cutoff),
+// claimUpload takes an upload that is still old enough away from the writers: its row goes, and with it the right to complete it, and in the same transaction the removal of its blocks is written down
+// for every node, so that a worker that dies after the claim leaves a task and not blocks that nothing remembers. It says false when the upload was completed or aborted meanwhile, or the database
+// failed: nothing is claimed then, and nothing may be removed. A store that is gone (m nil) has no node to remove anything from.
+func (w *Worker) claimUpload(ctx context.Context, m *store.Mirror, st, full, up string, cutoff int64) bool {
+	var stmts []rq.Stmt
+	if m != nil {
+		for _, n := range m.Nodes {
+			stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
+				"SELECT store, ?, ?, 'purge', ?, 0, 0, '' FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? AND created_at < ? "+
+				"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''",
+				layout.DirKey(full, up), n.ID, w.now(), st, full, up, cutoff))
+		}
+	}
+	claim := len(stmts)
+	stmts = append(stmts, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? AND created_at < ?", st, full, up, cutoff),
 		rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND (SELECT count(*) FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?) = 0", st, full, up, st, full, up))
-	return err == nil && len(res) > 0 && res[0] != 0
+	res, err := w.DB.Exec(ctx, true, stmts...)
+	return err == nil && len(res) > claim && res[claim] != 0
 }
 
-// removeClaimed removes the blocks of a claimed upload. The removal is written down first, so that a node that fails, or a worker that dies in the middle, is repaired later; what was done is then
-// settled.
+// removeClaimed removes the blocks of a claimed upload, and settles the removals that were written down with the claim; what a node could not do stays in the queue.
 func (w *Worker) removeClaimed(ctx context.Context, m *store.Mirror, st, full, up string) {
-	for _, n := range m.Nodes {
-		w.queuePurge(ctx, st, layout.DirKey(full, up), n.ID)
-	}
 	failed := map[string]bool{}
 	for _, n := range m.DeleteDir(ctx, layout.BlockDir(full, up)) {
 		failed[n.ID] = true
@@ -378,12 +389,6 @@ func (w *Worker) removeClaimed(ctx context.Context, m *store.Mirror, st, full, u
 			_, _ = w.DB.Exec(ctx, false, rq.S("DELETE FROM storage_repair WHERE store = ? AND key = ? AND node = ? AND op = 'purge'", st, layout.DirKey(full, up), n.ID))
 		}
 	}
-}
-
-func (w *Worker) queuePurge(ctx context.Context, st, key, node string) error {
-	_, err := w.DB.Exec(ctx, false, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) VALUES (?, ?, ?, 'purge', ?, 0, 0, '') "+
-		"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''", st, key, node, w.now()))
-	return w.queueFailed(err, "purge", key)
 }
 
 // queueCopy makes a `copy` task of a block a node lacks; a task that is already there is left alone, so that its pause is not lost.

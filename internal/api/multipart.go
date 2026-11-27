@@ -277,16 +277,30 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 	writeJSON(w, 200, map[string]any{"size": total})
 }
 
+// abort ends an upload and removes its blocks. It claims the upload first, in one transaction with the removals written down: only an upload that has not ended has a row, and only the one who takes
+// the row may remove the blocks. (An upload that was completed has the same name for the directory of its blocks: they are the object's, and an abort that comes after must not touch them; and one
+// that comes at the same moment as the completion either takes the row first, and the completion is refused, or finds none.)
 func (s *Server) abort(w http.ResponseWriter, r *http.Request, m *store.Mirror, full, upload string) {
 	ctx := r.Context()
 	if validUpload(upload) {
-		s.purge(ctx, m, full, upload)
-		s.at("abort:after-purge")
-		_, err := s.DB.Exec(ctx, true, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload),
+		var stmts []rq.Stmt
+		for _, n := range m.Nodes {
+			stmts = append(stmts, rq.S("INSERT INTO storage_repair (store, key, node, op, since, attempts, next_at, last_error) "+
+				"SELECT store, ?, ?, 'purge', ?, 0, 0, '' FROM storage_uploads WHERE store = ? AND key = ? AND upload = ? "+
+				"ON CONFLICT(store, key, node) DO UPDATE SET rev = rev + 1, op = 'purge', since = excluded.since, attempts = 0, next_at = 0, last_error = ''",
+				layout.DirKey(full, upload), n.ID, s.now(), m.Name, full, upload))
+		}
+		claim := len(stmts)
+		stmts = append(stmts, rq.S("DELETE FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload),
 			rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ?", m.Name, full, upload))
+		n, err := s.DB.Exec(ctx, true, stmts...)
 		if err != nil {
 			s.fail(w, err)
 			return
+		}
+		if len(n) > claim && n[claim] > 0 {
+			s.purgeNow(ctx, m, full, upload)
+			s.at("abort:after-purge")
 		}
 	}
 	writeJSON(w, 200, map[string]any{"aborted": true})
