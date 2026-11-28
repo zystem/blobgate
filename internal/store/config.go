@@ -28,7 +28,7 @@ type NodeSpec struct {
 
 // CurrentLayout is the version of how blocks lie on the nodes (the path of a block, the escaping of a key). A store records the one it was written with, and a program refuses a store with a
 // newer one: reading it with an older rule would take the blocks for strays.
-const CurrentLayout = 1
+const CurrentLayout = 2 // 2: a block of a part has the attempt in its name (layout.EntryPath)
 
 // Config is what is kept of a store, without its secrets.
 type Config struct {

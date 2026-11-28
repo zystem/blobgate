@@ -5,6 +5,12 @@ All notable changes. The format is that of [Keep a Changelog](https://keepachang
 
 ## [Unreleased]
 
+### Security
+* **Sending a part again can no longer damage what was acknowledged.** Every attempt of a part wrote the same file on a node: a retry that failed removed the block of the part that had been accepted (the completion then answered `200` and the object could not be read), and in a sealed store a retry that came late replaced the block with other bytes. Every attempt now has a file of its own, which is never written twice; a failed attempt removes only its own, and the files of the attempts that an object does not use are removed after its completion. **All releases up to 0.13.1 have this.**
+
+### Changed
+* **Not compatible with earlier releases** (the layout of a store is now 2): the name of a block of a part carries the attempt. Stop every replica of an older version before this one writes; an older program cannot read objects written in parts by this one. Objects written by earlier releases are read as before.
+
 ## [0.13.1] - 2026-11-28
 
 ### Security

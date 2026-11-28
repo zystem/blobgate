@@ -6,7 +6,7 @@ passes of the next replica the nodes must hold exactly the blocks of the objects
 ## The rule
 
 An object is **one row** in `storage_objects` (the generation and the SHA-256 of every block). A file on a node is a block of the object only if the row says so. A block is written under the path of a
-generation (`<key>~<generation>/<n>`) and never over another one. The row is switched to the new generation in one transaction, and **the same transaction writes down, for every node, the removal of the
+generation (`<key>~<generation>/<n>`; a block of a part has the attempt after the number, `<n>.<attempt>`) and never over another one: a file of a block is written once, also when a part is sent again. The row is switched to the new generation in one transaction, and **the same transaction writes down, for every node, the removal of the
 generation it replaces** (a `purge` task, read from the row in the transaction itself, so that writers of one key at the same moment each write down the generation they replaced). The removal is then
 tried at once, and the task is taken out of the queue by the node that did it. Nothing is ever only in memory.
 

@@ -165,7 +165,14 @@ func TestOneTenantCannotTakeEveryPlace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	var wg, started sync.WaitGroup
-	defer func() { cancel(); close(done); wg.Wait() }()
+	defer func() {
+		cancel()
+		close(done)
+		wg.Wait()
+		for i := 0; i < 100 && len(r.s.held) > 0; i++ { // the calls of the server end a moment after those of the clients, and remove what they wrote
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
 	for i := 0; i < 6; i++ { // readers of tenant 001 that take one byte and stop
 		wg.Add(1)
 		go func() {

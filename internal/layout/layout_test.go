@@ -78,16 +78,26 @@ func FuzzEscape(f *testing.F) {
 
 func TestRepairKeys(t *testing.T) {
 	for _, full := range []string{"001/a/b", "001/we~ird/x~y/1", "002/k"} {
-		f, g, n, blk, ok := ParseKey(BlockKey(full, "abc123", 7))
+		f, g, n, sfx, blk, ok := ParseKey(BlockKey(full, "abc123", 7))
 		if !ok || !blk || f != full || g != "abc123" || n != 7 {
 			t.Errorf("%q: %q %q %d %v %v", full, f, g, n, blk, ok)
 		}
-		f, g, _, blk, ok = ParseKey(DirKey(full, "abc123"))
+		if sfx != "" {
+			t.Errorf("suffix %q of a key with none", sfx)
+		}
+		entry := strings.Repeat("a", 64) + ".0f1e"
+		if Digest(entry) != strings.Repeat("a", 64) || Suffix(entry) != ".0f1e" || EntryPath("k", "g", 3, entry) != "k~g/3.0f1e" || EntryPath("k", "g", 3, Digest(entry)) != "k~g/3" {
+			t.Errorf("an entry: %q %q %q", Digest(entry), Suffix(entry), EntryPath("k", "g", 3, entry))
+		}
+		if _, g, n, sfx, blk, ok := ParseKey(BlockKey("001/a~b/c", "abc123", 7) + ".0f1e"); !ok || !blk || g != "abc123" || n != 7 || sfx != ".0f1e" {
+			t.Errorf("a key of an attempt: %q %d %q %v %v", g, n, sfx, blk, ok)
+		}
+		f, g, _, _, blk, ok = ParseKey(DirKey(full, "abc123"))
 		if !ok || blk || f != full || g != "abc123" {
 			t.Errorf("dir %q: %q %q %v %v", full, f, g, blk, ok)
 		}
 	}
-	if _, _, _, _, ok := ParseKey("nothing"); ok {
+	if _, _, _, _, _, ok := ParseKey("nothing"); ok {
 		t.Error("a key with no generation parsed")
 	}
 }

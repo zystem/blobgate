@@ -104,25 +104,36 @@ func (s *Server) putPart(w http.ResponseWriter, r *http.Request, m *store.Mirror
 		e.write(w)
 		return
 	}
-	sum5 := md5.New() // #nosec G401 -- see the import: the part of the ETag of a multipart object
-	wr, herr := s.putBlock(ctx, m, full, upload, n-1, size, given, io.TeeReader(r.Body, sum5))
+	sum5 := md5.New()       // #nosec G401 -- see the import: the part of the ETag of a multipart object
+	suffix := "." + newID() // this attempt's own file
+	rel := layout.BlockPath(full, upload, n-1) + suffix
+	discard := func() { deleteBlock(context.WithoutCancel(ctx), m, rel) }
+	wr, herr := s.putBlock(ctx, m, full, upload, n-1, suffix, size, given, io.TeeReader(r.Body, sum5))
 	if herr != nil {
 		herr.write(w)
 		return
 	}
-	if err := s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1), "copy", wr.failed); err != nil {
-		s.fail(w, err) // the part is not acknowledged: the client sends it again, which writes the block again
+	if err := s.queue(ctx, m.Name, layout.BlockKey(full, upload, n-1)+suffix, "copy", wr.failed); err != nil {
+		discard()
+		s.fail(w, err) // the part is not acknowledged: the client sends it again
 		return
 	}
 	s.at("part:after-block")
-	if _, err := s.DB.Exec(ctx, true, quotaGuard(m.Name, held{key: full, upload: upload, part: n}, false, "?", size), rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at, stored_sha256, stored_size, enc, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
-		"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at, stored_sha256 = excluded.stored_sha256, stored_size = excluded.stored_size, enc = excluded.enc, md5 = excluded.md5",
-		m.Name, full, upload, n, wr.plain, size, s.now(), wr.stored, wr.storedSize, wr.enc, hex.EncodeToString(sum5.Sum(nil)))); err != nil {
-		if quotaStopped(err) {
-			// the block of this number is on the nodes with the new bytes: a row of an earlier part with the same number would not be true of them any more
-			_, _ = s.DB.Exec(context.WithoutCancel(ctx), false, rq.S("DELETE FROM storage_parts WHERE store = ? AND key = ? AND upload = ? AND part = ?", m.Name, full, upload, n))
+	// the part is acknowledged only while the upload is there; a file of an attempt that is not acknowledged is removed by the attempt itself, and only that file
+	if _, err := s.DB.Exec(ctx, true,
+		rq.S("INSERT INTO storage_guard (upload, cond) SELECT NULL, 1 WHERE NOT EXISTS (SELECT 1 FROM storage_uploads WHERE store = ? AND key = ? AND upload = ?)", m.Name, full, upload),
+		quotaGuard(m.Name, held{key: full, upload: upload, part: n}, false, "?", size),
+		rq.S("INSERT INTO storage_parts (store, key, upload, part, sha256, size, written_at, stored_sha256, stored_size, enc, md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "+
+			"ON CONFLICT(store, key, upload, part) DO UPDATE SET sha256 = excluded.sha256, size = excluded.size, written_at = excluded.written_at, stored_sha256 = excluded.stored_sha256, stored_size = excluded.stored_size, enc = excluded.enc, md5 = excluded.md5",
+			m.Name, full, upload, n, wr.plain, size, s.now(), wr.stored+suffix, wr.storedSize, wr.enc, hex.EncodeToString(sum5.Sum(nil)))); err != nil {
+		switch {
+		case strings.Contains(err.Error(), "storage_guard.upload"):
+			discard()
+			err = errUploadGone
+		case quotaStopped(err):
+			discard()
 			err = errQuota
-		}
+		} // another error of the database says nothing of whether the row was written: the file stays, and goes with the upload or after the completion
 		s.fail(w, err)
 		return
 	}
@@ -274,6 +285,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, m *store.Mirro
 		s.fail(w, err)
 		return
 	}
+	s.dropAttempts(ctx, m, full, upload, blocks)
 	writeJSON(w, 200, map[string]any{"size": total})
 }
 
@@ -304,4 +316,14 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request, m *store.Mirror, 
 		}
 	}
 	writeJSON(w, 200, map[string]any{"aborted": true})
+}
+
+// dropAttempts removes, after a completion, the files of the attempts that the object does not use: parts that were sent again, and attempts that did not end. No part can be acknowledged any more, so
+// nothing can come to use them. What cannot be removed now stays with the object's blocks and goes when they do.
+func (s *Server) dropAttempts(ctx context.Context, m *store.Mirror, full, gen string, blocks []string) {
+	used := make(map[string]bool, len(blocks))
+	for i, entry := range blocks {
+		used[strconv.Itoa(i)+layout.Suffix(entry)] = true
+	}
+	m.KeepOnly(context.WithoutCancel(ctx), layout.BlockDir(full, gen), used)
 }

@@ -148,9 +148,9 @@ func (s *Server) streamRange(w http.ResponseWriter, r *http.Request, m *store.Mi
 			return nil, r.Context().Err()
 		}
 		defer func() { <-s.reads }()
-		data, bad, err := m.ReadBlockBad(r.Context(), layout.BlockPath(o.dir(full), o.generation, i), o.blocks[i], o.storedLen(i))
+		data, bad, err := m.ReadBlockBad(r.Context(), layout.EntryPath(o.dir(full), o.generation, i, o.blocks[i]), layout.Digest(o.blocks[i]), o.storedLen(i))
 		if len(bad) > 0 { // a copy that is there and is wrong: a good one is put in its place (the task is made even when this read ends with an error)
-			s.queue(context.WithoutCancel(r.Context()), m.Name, layout.BlockKey(o.dir(full), o.generation, i), "copy", bad)
+			s.queue(context.WithoutCancel(r.Context()), m.Name, layout.BlockKey(o.dir(full), o.generation, i)+layout.Suffix(o.blocks[i]), "copy", bad)
 		}
 		if err != nil || o.enc == 0 {
 			return data, err
