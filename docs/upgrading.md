@@ -78,7 +78,7 @@ kubectl -n <namespace> scale deployment/<release>-blobgate --replicas=0
 ```
 
 ```bash
-helm upgrade <release> oci://ghcr.io/zystem/charts/blobgate --version 0.14.0 -n <namespace> --reuse-values
+helm upgrade <release> oci://ghcr.io/zystem/charts/blobgate --version 0.14.0 -n <namespace> -f <your-values.yaml>
 ```
 
 These two commands were not run. If both versions have run side by side for a time: the older replica answers errors for objects that the new one wrote in parts; by reading the code nothing is removed by it, which was not tested.
