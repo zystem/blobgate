@@ -71,4 +71,16 @@ Run on 2026-11-27 on one machine: 0.12.0 and this code side by side on one datab
 
 **0.14.0** fixes a defect that loses data: sending a part of an upload again could damage the part that had been accepted ([../CHANGELOG.md](../CHANGELOG.md)). **This is not a rolling upgrade**: stop every replica of an older version before one of 0.14.0 writes. The layout of a store is now 2 and the name of a block of a part carries the attempt that wrote it, which an older program cannot read; do not go back to an older version after 0.14.0 has written. Objects written by earlier releases are read as before, and an upload that was going on can be completed. An object that was damaged by the defect is not repaired by the update. There is no schema change.
 
+The chart updates with `RollingUpdate`, so `helm upgrade` alone runs both versions side by side. Stop the replicas first (`<release>` is the name of the release; the deployment is `<release>-blobgate`, or `<release>` when that name holds `blobgate`), then upgrade, which sets the number of replicas again:
+
+```bash
+kubectl -n <namespace> scale deployment/<release>-blobgate --replicas=0
+```
+
+```bash
+helm upgrade <release> oci://ghcr.io/zystem/charts/blobgate --version 0.14.0 -n <namespace> --reuse-values
+```
+
+These two commands were not run. If both versions have run side by side for a time: the older replica answers errors for objects that the new one wrote in parts; by reading the code nothing is removed by it, which was not tested.
+
 Run on 2026-11-28 on one machine: 0.13.1, then this code on the same database and two local nodes (reads what was written, takes a part again and completes an upload begun on 0.13.1). Not run: an upgrade in a cluster, remote backends, the Ceph tests.
