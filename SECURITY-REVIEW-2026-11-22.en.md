@@ -6,9 +6,9 @@
 
 **Scope.** The target was the Go repository `blobgate`. A temporary snapshot included all tracked files as present in the working tree, including eight pre-existing modified files in the API, tests, chart, and documentation. Untracked build outputs were excluded. SHA-256 of the tracked binary diff against HEAD was `8d0f7672837a6c759f3346d95bcd37efd163a318a2a6277ec5ea8021eca33c0c`. Review covered authentication, S3 dispatch, conditional writes, encrypted storage, replication, cleanup, resource limits and the database client. Graphify assisted navigation. Findings describe source-level behavior and preconditions. The test results later in this report are separate evidence.
 
-## Status of the findings (added 2026-11-27)
+## Status of the findings (added 2026-11-27, revised 2026-11-28)
 
-The review below is as it was written, against commit 58a5dc5. This section was added later and says what was done about it. "Fixed" means changed and covered by tests of the repository; it is not a second review.
+The review below is as it was written, against commit 58a5dc5. This section was added later and says what was done about it. "Fixed" means changed and covered by tests of the repository; it is not a second review. **The review did not find everything**: two defects that lose data were found afterwards, while its acceptance tests were being written (below).
 
 | Finding | Status | Release |
 |---|---|---|
@@ -26,7 +26,32 @@ The review below is as it was written, against commit 58a5dc5. This section was 
 | Integer decoding | Fixed: exact integers; a cell of the wrong type is an error | 0.13.0 |
 | Benchmarks | Done for local nodes only ([docs/benchmark.md](docs/benchmark.md)). **Not run**: remote backends, network loss, a cluster | 0.13.0 |
 
-Not verified by any of this: external storage services under failure, multi-node Raft failover, timing side channels. The Ceph tests were not run for the 0.13.0 changes.
+### Found after the review
+
+Both lose data, both were present from the first release (0.1.0), and neither is a finding of the review.
+
+| Defect | Release that fixes it |
+|---|---|
+| An abort of an upload removed the blocks of its directory without asking whether the upload had ended: after a completion they are the object's (with deduplication, of every object that shares them). An abort at the same moment as a completion could acknowledge the completion and remove its blocks | 0.13.1 |
+| Every attempt of a part wrote the same file: a retry that failed removed the block of the part that had been accepted, and in a sealed store a late retry replaced it with other bytes | 0.14.0 (not compatible with earlier releases) |
+
+A sweep that died after it had claimed an upload and before it had written down the removal left blocks that nothing remembered (no data was lost; fixed in 0.13.1).
+
+### The acceptance tests that the review asks for
+
+| Asked | State |
+|---|---|
+| 1. Cleanup against completion: both orders, deduplication, two replicas, a worker restart | Tests (`sweeprace_test.go`, `abort_test.go`) |
+| 2. Mismatches over signed and presigned requests: PUT, copy, part copy, bulk delete, completion; nothing changes when refused | Tests (`s3signed_test.go`, `acceptance_presign_test.go`). The body of a presigned request is not covered by its signature in S3, and is not here |
+| 3. Two writers under one condition on two replicas | Tests (`cond_test.go`) |
+| 4. Ambiguous key identifiers are refused; reads after a rotation | Tests (`encrypt_test.go`) |
+| 5. A replaced repair task is not closed by the old one; a task that cannot be written down | Tests (`repairrev_test.go`); the write is refused rather than recovered later |
+| 6. Mixed reads, sealed uploads in parts and a slow replica together | Test with local nodes, one of them slowed (`acceptance_mixed_test.go`). Not run with a remote slow node or a real network |
+| Remote and database failures in responses and logs | Tests with failures put into the nodes and the database, and with one real WebDAV server stopped (`acceptance_errors_test.go`). The log lines of the failed calls are redacted; the lines of the worker and of the libraries are not checked or redacted |
+
+The tests of rows 2, 6 and the last were added after 0.14.0 and are not part of a release.
+
+Not verified by any of this: external storage services under failure beyond the above, multi-node Raft failover, timing side channels. The Ceph tests were not run for the changes of 0.13.0 to 0.14.0 on the machine of the author, and CI skips them.
 
 ## Priority findings and acceptance criteria
 
