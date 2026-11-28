@@ -205,8 +205,8 @@ type written struct {
 
 // putBlock reads a block from the body, checks its digest against the one the writer named, and writes it to the nodes (sealed, when the store seals). A block that does not match is not kept: with a
 // store that seals nothing is written at all, because the body is read before; without, what the nodes took is deleted by name.
-func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string, n int, size int64, given string, body io.Reader) (written, *herr) {
-	rel := layout.BlockPath(full, gen, n)
+func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string, n int, suffix string, size int64, given string, body io.Reader) (written, *herr) {
+	rel := layout.BlockPath(full, gen, n) + suffix
 	if m.Sealing() {
 		// a block is sealed whole (the tag is at its end): it is held in memory, one block per write going on, and the number of them is bounded
 		select {
@@ -256,7 +256,7 @@ func (s *Server) putBlock(ctx context.Context, m *store.Mirror, full, gen string
 
 // writeBlock writes the one block of an object in a single call; on a failure the whole directory of the generation is removed (what cannot be removed now is queued).
 func (s *Server) writeBlock(ctx context.Context, m *store.Mirror, full, gen string, n int, size int64, given string, body io.Reader) (written, *herr) {
-	w, e := s.putBlock(ctx, m, full, gen, n, size, given, body)
+	w, e := s.putBlock(ctx, m, full, gen, n, "", size, given, body)
 	if e != nil {
 		s.purge(ctx, m, full, gen)
 		return written{}, e
@@ -363,7 +363,11 @@ func etagOf(md5sum string, blocks []string, size int64) string {
 	if md5sum != "" {
 		return `"` + md5sum + `"`
 	}
-	h := sha256.Sum256([]byte(strings.Join(blocks, "\n") + "|" + strconv.FormatInt(size, 10)))
+	digests := make([]string, len(blocks))
+	for i, b := range blocks {
+		digests[i] = layout.Digest(b) // the name of an object does not depend on which attempt wrote its blocks
+	}
+	h := sha256.Sum256([]byte(strings.Join(digests, "\n") + "|" + strconv.FormatInt(size, 10)))
 	return `"` + hex.EncodeToString(h[:16]) + "-" + strconv.Itoa(max(len(blocks), 1)) + `"`
 }
 

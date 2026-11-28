@@ -61,15 +61,17 @@ func (c *crashRig) settle() {
 	}
 	w.Pass(context.Background())
 	w.Pass(context.Background())
-	rows, err := c.dbc.Query(context.Background(), rq.S("SELECT key, generation, size, block_size FROM storage_objects"))
+	rows, err := c.dbc.Query(context.Background(), rq.S("SELECT key, generation, blocks FROM storage_objects"))
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	var want []string
 	for _, r := range rows {
-		full, gen, size, bs := rq.Str(r[0]), rq.Str(r[1]), rq.Int(r[2]), rq.Int(r[3])
-		for i := int64(0); i*bs < size; i++ {
-			want = append(want, layout.BlockPath(full, gen, int(i)))
+		full, gen := rq.Str(r[0]), rq.Str(r[1])
+		var entries []string
+		_ = json.Unmarshal([]byte(rq.Str(r[2])), &entries)
+		for i, e := range entries {
+			want = append(want, layout.EntryPath(full, gen, i, e))
 		}
 	}
 	sort.Strings(want)

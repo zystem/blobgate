@@ -508,6 +508,27 @@ func (n *Node) Verify(ctx context.Context, rel string, size int64, sha string, d
 // RemoveDir removes a directory of blocks from this node (one that is not there is fine).
 func (n *Node) RemoveDir(ctx context.Context, dir string) error { return removeDir(ctx, n, dir) }
 
+// KeepOnly removes from every node the files of a directory whose names are not in `keep`. It is for what is garbage already: a node that fails keeps it until the directory goes.
+func (m *Mirror) KeepOnly(ctx context.Context, dir string, keep map[string]bool) {
+	var wg sync.WaitGroup
+	for _, node := range m.Nodes {
+		wg.Add(1)
+		go func(node *Node) {
+			defer wg.Done()
+			entries, err := node.F.List(ctx, dir)
+			if err != nil {
+				return
+			}
+			for _, e := range entries {
+				if o, ok := e.(fs.Object); ok && !keep[path.Base(o.Remote())] {
+					_ = o.Remove(ctx)
+				}
+			}
+		}(node)
+	}
+	wg.Wait()
+}
+
 // RemoveBlock removes one block from this node (one that is not there is fine).
 func (n *Node) RemoveBlock(ctx context.Context, rel string) error {
 	o, err := n.F.NewObject(ctx, rel)

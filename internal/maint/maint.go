@@ -226,7 +226,7 @@ func (w *Worker) do(ctx context.Context, t task) error {
 		}
 		return node.RemoveDir(ctx, t.key)
 	}
-	full, gen, n, isBlock, ok := layout.ParseKey(t.key)
+	full, gen, n, suffix, isBlock, ok := layout.ParseKey(t.key)
 	if node == nil || !ok {
 		return nil
 	}
@@ -237,19 +237,19 @@ func (w *Worker) do(ctx context.Context, t task) error {
 		if !isBlock {
 			return node.RemoveDir(ctx, layout.BlockDir(full, gen))
 		}
-		return node.RemoveBlock(ctx, layout.BlockPath(full, gen, n))
+		return node.RemoveBlock(ctx, layout.BlockPath(full, gen, n)+suffix)
 	case "copy":
 		if !isBlock {
 			return nil
 		}
-		sha, size, found, err := w.expected(ctx, t.store, full, gen, n)
+		entry, size, found, err := w.expected(ctx, t.store, full, gen, n)
 		if err != nil {
 			return err
 		}
-		if !found {
+		if !found || layout.Suffix(entry) != suffix {
 			return nil // the object was replaced or deleted meanwhile, or the upload ended: there is nothing to give
 		}
-		rel := layout.BlockPath(full, gen, n)
+		rel, sha := layout.BlockPath(full, gen, n)+suffix, layout.Digest(entry)
 		if node.Verify(ctx, rel, size, sha, true) == nil {
 			return nil
 		}
@@ -318,7 +318,7 @@ func (w *Worker) expected(ctx context.Context, st, full, gen string, n int) (sha
 	if err != nil || len(rows) == 0 {
 		return "", 0, false, err
 	}
-	if rq.Str(rows[0][2]) != "" { // sealed: what lies on the nodes is the stored block
+	if rq.Str(rows[0][2]) != "" { // the entry of the block as stored (sealed or not), with the attempt that wrote it
 		return rq.Str(rows[0][2]), rq.Int(rows[0][3]), true, nil
 	}
 	return rq.Str(rows[0][0]), rq.Int(rows[0][1]), true, nil
@@ -469,12 +469,12 @@ func (w *Worker) checkBlocks(ctx context.Context, m *store.Mirror, st, key, gen 
 		if sealed {
 			size += store.EncOverhead
 		}
-		rel := layout.BlockPath(key, gen, i)
+		rel := layout.EntryPath(key, gen, i, sha)
 		for _, n := range m.Nodes {
-			if n.Verify(ctx, rel, size, sha, w.cfg.Deep) == nil {
+			if n.Verify(ctx, rel, size, layout.Digest(sha), w.cfg.Deep) == nil {
 				continue
 			}
-			w.queueCopy(ctx, st, layout.BlockKey(key, gen, i), n.ID)
+			w.queueCopy(ctx, st, layout.BlockKey(key, gen, i)+layout.Suffix(sha), n.ID)
 			made++
 		}
 		if w.cfg.Deep && w.cfg.DeepBytesPS > 0 {

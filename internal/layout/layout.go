@@ -1,7 +1,7 @@
 // Package layout says how a key becomes a path on a node. A key is a path of segments (`001/acme/s1_x/dist/app.txt`); every segment is escaped so that it is one safe file name on the weakest node:
 //   - letters, digits and `- _ . + = @ , ( )` stay; every other byte is `%XX` (upper case hex), a space too (a server may trim it);
 //   - a leading or trailing `.` is escaped, so no file is hidden or called `.` or `..`;
-//   - `~` is escaped: it marks the generation suffix of a block directory (`<path>~<generation>/<n>`);
+//   - `~` is escaped: it marks the generation suffix of a block directory (`<path>~<generation>/<n>`, and `<n>.<attempt>` for a block of a part);
 //   - a segment whose escape is longer than 200 bytes becomes its first 120 bytes (never cut inside a `%XX`), `~` and 24 hex digits of the SHA-256 of the whole segment.
 //
 // A key is refused, never rewritten, when it could be a trick: empty, over 1024 bytes, an empty, `.` or `..` segment, a control character, a leading or trailing `/`.
@@ -106,6 +106,33 @@ func BlockPath(key, generation string, n int) string {
 	return fmt.Sprintf("%s/%d", BlockDir(key, generation), n)
 }
 
+// A block of a part of an upload is written under a name of its own for every attempt, `<n>.<attempt>`: a file of a block is never written twice, so that an attempt that fails, or comes late, cannot
+// touch what another one wrote. What the database keeps of a block (an entry) is the SHA-256 of the stored bytes, followed for such a block by `.<attempt>`. A block of a write in one call has no
+// attempt: its generation is the write's own.
+
+const digestLen = 64
+
+// Digest is the SHA-256 of an entry.
+func Digest(entry string) string {
+	if len(entry) > digestLen {
+		return entry[:digestLen]
+	}
+	return entry
+}
+
+// Suffix is what the file of the block of an entry has after its number: "" or `.<attempt>`.
+func Suffix(entry string) string {
+	if len(entry) > digestLen {
+		return entry[digestLen:]
+	}
+	return ""
+}
+
+// EntryPath is the path of block n of a generation as its entry says.
+func EntryPath(key, generation string, n int, entry string) string {
+	return BlockPath(key, generation, n) + Suffix(entry)
+}
+
 // BlockKey names a block in the repair queue: the key with the shard, `~`, the generation, `/`, the number. It is read back from the right (the generation has no `~` or `/`, the number no `/`), so a key that
 // holds both of those cannot be mistaken for it.
 func BlockKey(full, generation string, n int) string {
@@ -115,17 +142,21 @@ func BlockKey(full, generation string, n int) string {
 // DirKey names the blocks of a whole generation in the repair queue.
 func DirKey(full, generation string) string { return full + "~" + generation }
 
-// ParseKey reads what BlockKey or DirKey made. isBlock is false for a directory (a `purge` task).
-func ParseKey(k string) (full, generation string, n int, isBlock bool, ok bool) {
+// ParseKey reads what BlockKey (with a Suffix after it, or not) or DirKey made. isBlock is false for a directory (a `purge` task).
+func ParseKey(k string) (full, generation string, n int, suffix string, isBlock bool, ok bool) {
 	if i := strings.LastIndexByte(k, '/'); i >= 0 {
-		if v, err := strconv.Atoi(k[i+1:]); err == nil && v >= 0 {
+		name := k[i+1:]
+		if d := strings.IndexByte(name, '.'); d >= 0 {
+			name, suffix = name[:d], name[d:]
+		}
+		if v, err := strconv.Atoi(name); err == nil && v >= 0 {
 			if j := strings.LastIndexByte(k[:i], '~'); j > 0 && j < i-1 {
-				return k[:j], k[j+1 : i], v, true, true
+				return k[:j], k[j+1 : i], v, suffix, true, true
 			}
 		}
 	}
 	if j := strings.LastIndexByte(k, '~'); j > 0 && j < len(k)-1 && !strings.ContainsRune(k[j+1:], '/') {
-		return k[:j], k[j+1:], 0, false, true
+		return k[:j], k[j+1:], 0, "", false, true
 	}
-	return "", "", 0, false, false
+	return "", "", 0, "", false, false
 }
